@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · loop preview · filters · region re-chop")
+st.caption("Best chops · scores · crossfade · session memory")
 
 def process(seg, style):
     if style == "Dusty":
@@ -23,16 +23,6 @@ def process(seg, style):
         seg = seg * 0.7
     return seg
 
-def apply_filter(seg, sr, filter_type, cutoff):
-    if filter_type == "None" or cutoff <= 0:
-        return seg
-    # Simple one-pole style via librosa (approximate)
-    if filter_type == "Low-pass":
-        seg = librosa.effects.preemphasis(seg, coef=-0.5)  # light low-pass feel
-    elif filter_type == "High-pass":
-        seg = librosa.effects.preemphasis(seg, coef=0.97)
-    return seg
-
 def apply_fade(seg, fade_ms, sr):
     if fade_ms <= 0 or len(seg) == 0:
         return seg
@@ -42,6 +32,23 @@ def apply_fade(seg, fade_ms, sr):
         seg[:fade_samples] *= np.linspace(0, 1, fade_samples)
         seg[-fade_samples:] *= np.linspace(1, 0, fade_samples)
     return seg
+
+def apply_crossfade_loop(seg, sr, crossfade_ms=30):
+    if crossfade_ms <= 0 or len(seg) < sr * 0.2:
+        return np.concatenate([seg] * 4)
+    cf = int(crossfade_ms / 1000 * sr)
+    cf = min(cf, len(seg)//4)
+    if cf <= 0:
+        return np.concatenate([seg] * 4)
+    fade_out = np.linspace(1, 0, cf)
+    fade_in = np.linspace(0, 1, cf)
+    looped = []
+    for i in range(4):
+        chunk = seg.copy()
+        if i > 0:
+            chunk[:cf] = chunk[:cf] * fade_in + seg[-cf:] * fade_out
+        looped.append(chunk)
+    return np.concatenate(looped)
 
 def norm(seg):
     peak = np.max(np.abs(seg))
@@ -75,7 +82,6 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
         if len(beat_times):
             dist = min(abs(start - bt) for bt in beat_times)
             bonus = max(0.0, 1.0 - dist * 4)
-        # Strong preference for chops that end near a beat (cleaner loops)
         end_bonus = 0.0
         if len(beat_times):
             end_dist = min(abs(end - bt) for bt in beat_times)
@@ -120,7 +126,6 @@ if uploaded:
     key = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
 
-    # Region re-chop option
     use_region = st.checkbox("Chop a specific section instead", value=False)
     if use_region:
         region_start = st.slider("Region start (sec)", 0.0, max(0.1, duration-1), 0.0, 0.1)
@@ -144,9 +149,10 @@ if uploaded:
             st.session_state.key = key
             st.session_state.source_key = source_key
             
-            for i, (start, end, _) in enumerate(selected, 1):
+            for i, (start, end, sc) in enumerate(selected, 1):
                 st.session_state.auto_chops.append({
                     "id": i,
+                    "score": sc,
                     "orig_start": start + region_offset,
                     "orig_end": end + region_offset,
                     "start": start + region_offset,
@@ -154,7 +160,8 @@ if uploaded:
                     "pitch": 0,
                     "reverse": False,
                     "style": "Clean",
-                    "filter": "None"
+                    "filter": "None",
+                    "crossfade": 30
                 })
 
     bpm = st.session_state.bpm
@@ -164,7 +171,7 @@ if uploaded:
     all_files = []
 
     for chop in st.session_state.auto_chops:
-        st.markdown(f"### Chop {chop['id']}")
+        st.markdown(f"### Chop {chop['id']} · Score: {chop['score']:.2f}")
 
         start_adjust = st.slider("Start adjust (sec)", -1.0, 1.0, chop["start"] - chop["orig_start"], 0.05, key=f"start_{chop['id']}")
         chop["start"] = max(0, chop["orig_start"] + start_adjust)
@@ -188,6 +195,8 @@ if uploaded:
                                       index=["None","Low-pass","High-pass"].index(chop["filter"]),
                                       key=f"filter_{chop['id']}")
 
+        chop["crossfade"] = st.slider("Loop crossfade (ms)", 0, 100, chop["crossfade"], 5, key=f"cf_{chop['id']}")
+
         start_sample = int(max(0, chop["start"]) * sr)
         end_sample = int(min(chop["end"], duration) * sr)
         seg = y_full[start_sample:end_sample].copy()
@@ -197,7 +206,10 @@ if uploaded:
         if chop["reverse"]:
             seg = seg[::-1]
         seg = process(seg, chop["style"])
-        seg = apply_filter(seg, sr, chop["filter"], 2000)
+        if chop["filter"] == "Low-pass":
+            seg = librosa.effects.preemphasis(seg, coef=-0.4)
+        elif chop["filter"] == "High-pass":
+            seg = librosa.effects.preemphasis(seg, coef=0.97)
         seg = apply_fade(seg, 12, sr)
         seg = norm(seg)
 
@@ -221,13 +233,13 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        # Loop version included in pack
-        looped = np.concatenate([seg] * 4)
+        # Crossfaded loop preview
+        looped = apply_crossfade_loop(seg, sr, chop["crossfade"])
         loop_name = name.replace(".wav", "_loop.wav")
         loop_path = os.path.join(out_dir, loop_name)
         sf.write(loop_path, looped, sr)
         all_files.append(loop_path)
-        st.markdown("**Loop (4x)**")
+        st.markdown(f"**Loop (4x, {chop['crossfade']}ms crossfade)**")
         st.audio(loop_path)
 
     st.divider()
