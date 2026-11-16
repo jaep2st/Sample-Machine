@@ -6,11 +6,10 @@ from pathlib import Path
 import numpy as np
 import librosa
 import soundfile as sf
-import subprocess
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · stems · loop preview · one-shots")
+st.caption("Best chops · loop preview · filters · region re-chop")
 
 def process(seg, style):
     if style == "Dusty":
@@ -22,6 +21,16 @@ def process(seg, style):
     elif style == "Dark":
         seg = np.convolve(seg, np.ones(31)/31, mode="same")
         seg = seg * 0.7
+    return seg
+
+def apply_filter(seg, sr, filter_type, cutoff):
+    if filter_type == "None" or cutoff <= 0:
+        return seg
+    # Simple one-pole style via librosa (approximate)
+    if filter_type == "Low-pass":
+        seg = librosa.effects.preemphasis(seg, coef=-0.5)  # light low-pass feel
+    elif filter_type == "High-pass":
+        seg = librosa.effects.preemphasis(seg, coef=0.97)
     return seg
 
 def apply_fade(seg, fade_ms, sr):
@@ -66,10 +75,11 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
         if len(beat_times):
             dist = min(abs(start - bt) for bt in beat_times)
             bonus = max(0.0, 1.0 - dist * 4)
+        # Strong preference for chops that end near a beat (cleaner loops)
         end_bonus = 0.0
         if len(beat_times):
             end_dist = min(abs(end - bt) for bt in beat_times)
-            end_bonus = max(0.0, 0.5 - end_dist * 2)
+            end_bonus = max(0.0, 1.2 - end_dist * 3)
         balance = 1.0 - abs(energy - 0.15) * 2
         score = energy * (1 + bonus) * max(0.3, balance) * (1 + end_bonus)
         candidates.append((start, end, score))
@@ -98,23 +108,6 @@ def extract_oneshots(y, sr, max_shots=4):
     shots.sort(key=lambda x: x[1], reverse=True)
     return shots[:max_shots]
 
-def separate_stems(audio_path, out_dir):
-    try:
-        cmd = ["python", "-m", "demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", out_dir, audio_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode != 0:
-            return {}
-        base = Path(audio_path).stem
-        stem_dir = Path(out_dir) / "htdemucs" / base
-        stems = {}
-        for stem in ["vocals", "no_vocals"]:
-            p = stem_dir / f"{stem}.wav"
-            if p.exists():
-                stems[stem] = str(p)
-        return stems
-    except Exception:
-        return {}
-
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
@@ -127,50 +120,45 @@ if uploaded:
     key = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
 
-    use_stems = st.checkbox("Separate stems first (may not work on free tier)", value=False)
-    stem_choice = "full"
-    stems = {}
-
-    if use_stems:
-        with st.spinner("Trying stem separation..."):
-            stem_out = tempfile.mkdtemp()
-            stems = separate_stems(path, stem_out)
-        if stems:
-            stem_choice = st.selectbox("Chop from", ["full", "vocals", "no_vocals"])
+    # Region re-chop option
+    use_region = st.checkbox("Chop a specific section instead", value=False)
+    if use_region:
+        region_start = st.slider("Region start (sec)", 0.0, max(0.1, duration-1), 0.0, 0.1)
+        region_end = st.slider("Region end (sec)", 1.0, duration, min(duration, 30.0), 0.1)
+        if region_end > region_start:
+            y_source = y_full[int(region_start*sr):int(region_end*sr)]
+            region_offset = region_start
         else:
-            st.warning("Stem separation not available — using full mix")
-            stem_choice = "full"
-
-    if stem_choice != "full" and stem_choice in stems:
-        y_source, sr = librosa.load(stems[stem_choice], sr=44100, mono=True)
-        source_label = stem_choice
+            y_source = y_full
+            region_offset = 0.0
     else:
         y_source = y_full
-        source_label = "full"
+        region_offset = 0.0
 
-    if "auto_chops" not in st.session_state or st.session_state.get("last_file") != uploaded.name or st.session_state.get("stem") != stem_choice:
+    source_key = f"{uploaded.name}_{region_offset}"
+    if "auto_chops" not in st.session_state or st.session_state.get("source_key") != source_key:
         with st.spinner("Finding the best chops..."):
             selected, bpm = find_best_chops(y_source, sr, bars=4, max_chops=6)
             st.session_state.auto_chops = []
             st.session_state.bpm = bpm
             st.session_state.key = key
-            st.session_state.last_file = uploaded.name
-            st.session_state.stem = stem_choice
+            st.session_state.source_key = source_key
             
             for i, (start, end, _) in enumerate(selected, 1):
                 st.session_state.auto_chops.append({
                     "id": i,
-                    "orig_start": start,
-                    "orig_end": end,
-                    "start": start,
-                    "end": end,
+                    "orig_start": start + region_offset,
+                    "orig_end": end + region_offset,
+                    "start": start + region_offset,
+                    "end": end + region_offset,
                     "pitch": 0,
                     "reverse": False,
-                    "style": "Clean"
+                    "style": "Clean",
+                    "filter": "None"
                 })
 
     bpm = st.session_state.bpm
-    st.write(f"**{bpm:.1f} BPM** · **{key}** · {source_label}")
+    st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
     out_dir = tempfile.mkdtemp()
     all_files = []
@@ -181,7 +169,7 @@ if uploaded:
         start_adjust = st.slider("Start adjust (sec)", -1.0, 1.0, chop["start"] - chop["orig_start"], 0.05, key=f"start_{chop['id']}")
         chop["start"] = max(0, chop["orig_start"] + start_adjust)
 
-        max_extend = min(4.0, len(y_source)/sr - chop["orig_end"])
+        max_extend = min(4.0, duration - chop["orig_end"])
         max_shorten = max(0.3, chop["orig_end"] - chop["orig_start"] - 0.5)
         length_adjust = st.slider("Length adjust (sec)", -max_shorten, max_extend, chop["end"] - chop["orig_end"], 0.1, key=f"len_{chop['id']}")
         chop["end"] = chop["orig_end"] + length_adjust
@@ -196,25 +184,32 @@ if uploaded:
                                          index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
                                          key=f"style_{chop['id']}")
 
+        chop["filter"] = st.selectbox("Filter", ["None", "Low-pass", "High-pass"],
+                                      index=["None","Low-pass","High-pass"].index(chop["filter"]),
+                                      key=f"filter_{chop['id']}")
+
         start_sample = int(max(0, chop["start"]) * sr)
-        end_sample = int(min(chop["end"], len(y_source)/sr) * sr)
-        seg = y_source[start_sample:end_sample].copy()
+        end_sample = int(min(chop["end"], duration) * sr)
+        seg = y_full[start_sample:end_sample].copy()
 
         if chop["pitch"] != 0:
             seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
         if chop["reverse"]:
             seg = seg[::-1]
         seg = process(seg, chop["style"])
+        seg = apply_filter(seg, sr, chop["filter"], 2000)
         seg = apply_fade(seg, 12, sr)
         seg = norm(seg)
 
-        name = f"{int(bpm)}bpm_{key}_{source_label}_chop{chop['id']:02d}"
+        name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
         if chop["pitch"] != 0:
             name += f"_p{chop['pitch']:+d}"
         if chop["reverse"]:
             name += "_rev"
         if chop["style"] != "Clean":
             name += f"_{chop['style'].lower()}"
+        if chop["filter"] != "None":
+            name += f"_{chop['filter'].lower().replace('-','')}"
         name += ".wav"
 
         tmp_path = os.path.join(out_dir, name)
@@ -226,20 +221,23 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
+        # Loop version included in pack
         looped = np.concatenate([seg] * 4)
-        loop_path = os.path.join(out_dir, f"loop_{chop['id']}.wav")
+        loop_name = name.replace(".wav", "_loop.wav")
+        loop_path = os.path.join(out_dir, loop_name)
         sf.write(loop_path, looped, sr)
+        all_files.append(loop_path)
         st.markdown("**Loop (4x)**")
         st.audio(loop_path)
 
     st.divider()
     st.subheader("One-shots")
-    oneshots = extract_oneshots(y_source, sr, max_shots=4)
+    oneshots = extract_oneshots(y_full, sr, max_shots=4)
     for i, (onset, energy) in enumerate(oneshots, 1):
-        window = y_source[int(onset*sr):int((onset+0.5)*sr)]
+        window = y_full[int(onset*sr):int((onset+0.5)*sr)]
         window = apply_fade(window, 6, sr)
         window = norm(window)
-        os_name = f"{int(bpm)}bpm_{key}_{source_label}_oneshot{i:02d}_{onset:.1f}s.wav"
+        os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
         os_path = os.path.join(out_dir, os_name)
         sf.write(os_path, window, sr)
         all_files.append(os_path)
@@ -254,4 +252,4 @@ if uploaded:
             for fpath in all_files:
                 zf.write(fpath, Path(fpath).name)
         with open(zpath, "rb") as f:
-            st.download_button("Download Full Pack", f, file_name="sample_pack.zip", key="pack")
+            st.download_button("Download Full Pack (includes loops)", f, file_name="sample_pack.zip", key="pack")
