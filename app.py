@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · waveform · snap to beat · presets")
+st.caption("Best chops · humanize · loop points · one-shot length")
 
 def process(seg, style):
     if style == "Dusty":
@@ -203,14 +203,15 @@ if uploaded:
                     "fade_out": 6,
                     "crossfade": 15,
                     "volume": 1.0,
-                    "include": True
+                    "include": True,
+                    "humanize": False
                 })
 
     bpm = st.session_state.bpm
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
-    # Simple presets
+    # Presets
     if "presets" not in st.session_state:
         st.session_state.presets = {}
     preset_name = st.text_input("Preset name")
@@ -239,12 +240,13 @@ if uploaded:
     out_dir = tempfile.mkdtemp()
     included_files = []
     oneshot_files = []
+    loop_points = []
 
     for chop in st.session_state.auto_chops:
         with st.expander(f"Chop {chop['id']} · Score: {chop['score']:.2f}", expanded=True):
             chop["include"] = st.checkbox("Include in pack", value=chop["include"], key=f"inc_{chop['id']}")
 
-            # Waveform preview
+            # Waveform
             preview_start = max(0, chop["start"] - 0.5)
             preview_end = min(duration, chop["end"] + 0.5)
             y_preview = y_full[int(preview_start*sr):int(preview_end*sr)]
@@ -269,9 +271,11 @@ if uploaded:
             if chop["end"] <= chop["start"] + 0.15:
                 chop["end"] = chop["start"] + 0.15
 
-            if st.button("Snap to nearest beats", key=f"snap_{chop['id']}"):
+            if st.button("Make it loop", key=f"loopbtn_{chop['id']}"):
                 chop["start"] = snap_to_nearest_beat(chop["start"], beat_times)
                 chop["end"] = snap_to_nearest_beat(chop["end"], beat_times)
+
+            chop["humanize"] = st.checkbox("Humanize start", value=chop["humanize"], key=f"hum_{chop['id']}")
 
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -301,7 +305,13 @@ if uploaded:
             chop["volume"] = st.slider("Volume", 0.6, 1.4, chop["volume"], 0.05, key=f"vol_{chop['id']}")
             chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
 
-            start_sample = int(max(0, chop["start"]) * sr)
+            # Humanize
+            start_use = chop["start"]
+            if chop["humanize"]:
+                start_use += np.random.uniform(-0.025, 0.025)
+                start_use = max(0, start_use)
+
+            start_sample = int(start_use * sr)
             end_sample = int(min(chop["end"], duration) * sr)
             seg = y_full[start_sample:end_sample].copy()
 
@@ -329,6 +339,7 @@ if uploaded:
             sf.write(tmp_path, seg, sr)
             if chop["include"]:
                 included_files.append(tmp_path)
+                loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
 
             st.markdown("**Single**")
             st.audio(tmp_path)
@@ -345,14 +356,25 @@ if uploaded:
             st.markdown("**Loop (4x)**")
             st.audio(loop_path)
 
+    # Export loop points
+    if loop_points:
+        points_text = "\n".join(loop_points)
+        points_path = os.path.join(out_dir, "loop_points.txt")
+        with open(points_path, "w") as f:
+            f.write(points_text)
+        with open(points_path, "rb") as f:
+            st.download_button("Download Loop Points", f, file_name="loop_points.txt", key="points")
+
+    # One-shots with length control
     st.divider()
     st.subheader("One-shots")
     max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
+    oneshot_len = st.slider("One-shot length (sec)", 0.3, 1.2, 0.5, 0.05)
     oneshots = extract_oneshots(y_full, sr, max_shots=max_oneshots)
     include_oneshots = st.checkbox("Include one-shots in pack", value=True)
 
     for i, (onset, energy) in enumerate(oneshots, 1):
-        window = y_full[int(onset*sr):int((onset+0.4)*sr)]
+        window = y_full[int(onset*sr):int((onset + oneshot_len)*sr)]
         window = apply_fade(window, 4, 4, sr)
         window = norm(window)
         os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
