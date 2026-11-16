@@ -5,4 +5,3 @@ soundfile
 numpy
 audioop-lts
 matplotlib
-demcus
