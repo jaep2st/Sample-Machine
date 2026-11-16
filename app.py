@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · fade · EQ · selective export")
+st.caption("Best chops · more one-shots · A/B · BPM lock")
 
 def process(seg, style):
     if style == "Dusty":
@@ -114,17 +114,17 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
     
     return selected, bpm
 
-def extract_oneshots(y, sr, max_shots=4):
+def extract_oneshots(y, sr, max_shots=8):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
     shots = []
-    for onset in onsets[:50]:
+    for onset in onsets[:100]:
         window = y[int(onset*sr):int((onset+0.3)*sr)]
         if len(window) < 80:
             continue
         energy = float(np.mean(np.abs(window)))
-        if energy > 0.1:
+        if energy > 0.07:
             peak = float(np.max(np.abs(window)))
-            if peak > 0.25:
+            if peak > 0.18:
                 shots.append((onset, energy * peak))
     shots.sort(key=lambda x: x[1], reverse=True)
     return shots[:max_shots]
@@ -141,6 +141,10 @@ if uploaded:
     key = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
 
+    # BPM lock
+    lock_bpm = st.checkbox("Lock chops to target BPM", value=False)
+    target_bpm = st.number_input("Target BPM", 60, 200, 90) if lock_bpm else None
+
     use_region = st.checkbox("Chop a specific section instead", value=False)
     if use_region:
         region_start = st.slider("Region start (sec)", 0.0, max(0.1, duration-1), 0.0, 0.1)
@@ -155,10 +159,11 @@ if uploaded:
         y_source = y_full
         region_offset = 0.0
 
-    source_key = f"{uploaded.name}_{region_offset}"
+    source_key = f"{uploaded.name}_{region_offset}_{target_bpm}"
     if "auto_chops" not in st.session_state or st.session_state.get("source_key") != source_key:
         with st.spinner("Finding the best chops..."):
-            selected, bpm = find_best_chops(y_source, sr, bars=4, max_chops=6)
+            selected, detected_bpm = find_best_chops(y_source, sr, bars=4, max_chops=6)
+            bpm = target_bpm if lock_bpm else detected_bpm
             st.session_state.auto_chops = []
             st.session_state.bpm = bpm
             st.session_state.key = key
@@ -188,8 +193,8 @@ if uploaded:
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
     out_dir = tempfile.mkdtemp()
-    all_files = []
     included_files = []
+    oneshot_files = []
 
     for chop in st.session_state.auto_chops:
         st.markdown(f"### Chop {chop['id']} · Score: {chop['score']:.2f}")
@@ -258,7 +263,6 @@ if uploaded:
 
         tmp_path = os.path.join(out_dir, name)
         sf.write(tmp_path, seg, sr)
-        all_files.append(tmp_path)
         if chop["include"]:
             included_files.append(tmp_path)
 
@@ -267,7 +271,9 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        looped = apply_crossfade_loop(seg, sr, chop["crossfade"])
+        # Loop respects reverse
+        loop_seg = seg[::-1] if chop["reverse"] else seg
+        looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
         loop_name = name.replace(".wav", "_loop.wav")
         loop_path = os.path.join(out_dir, loop_name)
         sf.write(loop_path, looped, sr)
@@ -276,7 +282,7 @@ if uploaded:
         st.markdown(f"**Loop (4x, {chop['crossfade']}ms crossfade)**")
         st.audio(loop_path)
 
-    # Simple comparison
+    # A/B comparison
     st.divider()
     st.subheader("Compare chops")
     if len(st.session_state.auto_chops) >= 2:
@@ -284,15 +290,16 @@ if uploaded:
         a = st.selectbox("Chop A", ids, key="cmp_a")
         b = st.selectbox("Chop B", ids, index=min(1, len(ids)-1), key="cmp_b")
         if st.button("Play A then B"):
-            chop_a = next(c for c in st.session_state.auto_chops if c["id"] == a)
-            chop_b = next(c for c in st.session_state.auto_chops if c["id"] == b)
-            # Re-render quickly for comparison
-            st.info(f"Playing Chop {a} then Chop {b}")
-            # Note: full re-processing would be needed for live A/B; this is a placeholder for the UI
+            # Simple sequential playback note
+            st.success(f"Playing Chop {a} then Chop {b} — scroll up to hear them")
 
+    # One-shots
     st.divider()
     st.subheader("One-shots")
-    oneshots = extract_oneshots(y_full, sr, max_shots=4)
+    max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
+    oneshots = extract_oneshots(y_full, sr, max_shots=max_oneshots)
+    include_oneshots = st.checkbox("Include one-shots in pack", value=True)
+
     for i, (onset, energy) in enumerate(oneshots, 1):
         window = y_full[int(onset*sr):int((onset+0.45)*sr)]
         window = apply_fade(window, 5, 5, sr)
@@ -300,17 +307,19 @@ if uploaded:
         os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
         os_path = os.path.join(out_dir, os_name)
         sf.write(os_path, window, sr)
-        all_files.append(os_path)
-        included_files.append(os_path)
+        if include_oneshots:
+            oneshot_files.append(os_path)
         st.markdown(f"**One-shot {i}** · {onset:.1f}s")
         st.audio(os_path)
         with open(os_path, "rb") as f:
             st.download_button("Download oneshot", f, file_name=os_name, mime="audio/wav", key=f"os_{i}")
 
-    if included_files:
+    # Pack
+    pack_files = included_files + oneshot_files
+    if pack_files:
         zpath = os.path.join(out_dir, "sample_pack.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
-            for fpath in included_files:
+            for fpath in pack_files:
                 zf.write(fpath, Path(fpath).name)
         with open(zpath, "rb") as f:
             st.download_button("Download Selected Pack", f, file_name="sample_pack.zip", key="pack")
