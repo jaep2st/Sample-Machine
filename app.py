@@ -9,18 +9,36 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · cleaner loop alignment")
+st.caption("Best chops · cleaner controls")
 
 def process(seg, style):
     if style == "Dusty":
-        seg = np.convolve(seg, np.ones(17)/17, mode="same")
-        seg = np.tanh(seg * 1.25) * 0.88
+        seg = np.convolve(seg, np.ones(15)/15, mode="same")
+        seg = np.tanh(seg * 1.3) * 0.85
     elif style == "Warm":
-        seg = np.convolve(seg, np.ones(7)/7, mode="same")
-        seg = np.tanh(seg * 1.1) * 0.94
+        seg = np.convolve(seg, np.ones(5)/5, mode="same")
+        seg = np.tanh(seg * 1.08) * 0.95
     elif style == "Dark":
-        seg = np.convolve(seg, np.ones(31)/31, mode="same")
-        seg = seg * 0.7
+        seg = np.convolve(seg, np.ones(25)/25, mode="same")
+        seg = seg * 0.65
+    return seg
+
+def apply_eq(seg, sr, eq_type, amount):
+    if eq_type == "None" or amount == 0:
+        return seg
+    amount = amount * 0.6  # keep it musical
+    if eq_type == "Low shelf":
+        # Boost/cut lows
+        low = np.convolve(seg, np.ones(11)/11, mode="same")
+        return seg + low * amount
+    if eq_type == "High shelf":
+        # Boost/cut highs
+        high = seg - np.convolve(seg, np.ones(7)/7, mode="same")
+        return seg + high * amount
+    if eq_type == "Low-pass":
+        return np.convolve(seg, np.ones(int(5 + amount*15))/int(5 + amount*15), mode="same")
+    if eq_type == "High-pass":
+        return seg - np.convolve(seg, np.ones(int(3 + amount*8))/int(3 + amount*8), mode="same")
     return seg
 
 def apply_fade(seg, fade_in_ms, fade_out_ms, sr):
@@ -35,20 +53,11 @@ def apply_fade(seg, fade_in_ms, fade_out_ms, sr):
             seg[-fo:] *= np.linspace(1, 0, fo)
     return seg
 
-def apply_eq(seg, eq_type, amount):
-    if eq_type == "None" or amount == 0:
-        return seg
-    if eq_type == "Low shelf":
-        return seg * (1 + amount * 0.3) + np.convolve(seg, np.ones(9)/9, mode="same") * amount * 0.4
-    if eq_type == "High shelf":
-        return seg * (1 + amount * 0.2) + librosa.effects.preemphasis(seg, coef=0.9) * amount * 0.5
-    return seg
-
-def apply_crossfade_loop(seg, sr, crossfade_ms=30):
-    if crossfade_ms <= 0 or len(seg) < sr * 0.2:
+def apply_crossfade_loop(seg, sr, crossfade_ms=20):
+    if crossfade_ms <= 0 or len(seg) < sr * 0.15:
         return np.concatenate([seg] * 4)
     cf = int(crossfade_ms / 1000 * sr)
-    cf = min(cf, len(seg)//4)
+    cf = min(cf, len(seg)//5)
     if cf <= 0:
         return np.concatenate([seg] * 4)
     fade_out = np.linspace(1, 0, cf)
@@ -64,7 +73,7 @@ def apply_crossfade_loop(seg, sr, crossfade_ms=30):
 def norm(seg, gain=1.0):
     peak = np.max(np.abs(seg))
     if peak > 0:
-        seg = seg / peak * 0.95 * gain
+        seg = seg / peak * 0.92 * gain
     return np.clip(seg, -1.0, 1.0)
 
 def detect_key(y, sr):
@@ -180,10 +189,10 @@ if uploaded:
                     "reverse": False,
                     "style": "Clean",
                     "eq": "None",
-                    "eq_amount": 0.5,
-                    "fade_in": 8,
-                    "fade_out": 8,
-                    "crossfade": 20,
+                    "eq_amount": 0.4,
+                    "fade_in": 6,
+                    "fade_out": 6,
+                    "crossfade": 15,
                     "volume": 1.0,
                     "include": True
                 })
@@ -196,104 +205,91 @@ if uploaded:
     oneshot_files = []
 
     for chop in st.session_state.auto_chops:
-        st.markdown(f"### Chop {chop['id']} · Score: {chop['score']:.2f}")
-        st.caption(f"Original: {chop['orig_start']:.2f}s – {chop['orig_end']:.2f}s")
+        with st.expander(f"Chop {chop['id']} · Score: {chop['score']:.2f}", expanded=True):
+            chop["include"] = st.checkbox("Include in pack", value=chop["include"], key=f"inc_{chop['id']}")
 
-        chop["include"] = st.checkbox("Include in pack", value=chop["include"], key=f"inc_{chop['id']}")
+            col_start, col_end = st.columns(2)
+            with col_start:
+                start_trim = st.slider("Trim start", -0.4, 0.4, chop["start"] - chop["orig_start"], 0.01, key=f"st_{chop['id']}")
+            with col_end:
+                end_trim = st.slider("Trim end", -0.4, 0.4, chop["end"] - chop["orig_end"], 0.01, key=f"et_{chop['id']}")
 
-        # Cleaner trim controls
-        col_start, col_end = st.columns(2)
-        with col_start:
-            start_trim = st.slider("Trim start (sec)", -0.5, 0.5, chop["start"] - chop["orig_start"], 0.01, key=f"st_{chop['id']}")
-        with col_end:
-            end_trim = st.slider("Trim end (sec)", -0.5, 0.5, chop["end"] - chop["orig_end"], 0.01, key=f"et_{chop['id']}")
+            chop["start"] = max(0, chop["orig_start"] + start_trim)
+            chop["end"] = min(duration, chop["orig_end"] + end_trim)
+            if chop["end"] <= chop["start"] + 0.15:
+                chop["end"] = chop["start"] + 0.15
 
-        chop["start"] = max(0, chop["orig_start"] + start_trim)
-        chop["end"] = min(duration, chop["orig_end"] + end_trim)
-        if chop["end"] <= chop["start"] + 0.2:
-            chop["end"] = chop["start"] + 0.2
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                chop["pitch"] = st.slider("Pitch", -12, 12, chop["pitch"], key=f"pitch_{chop['id']}")
+            with c2:
+                chop["reverse"] = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
+            with c3:
+                chop["style"] = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"],
+                                             index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
+                                             key=f"style_{chop['id']}")
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            chop["pitch"] = st.slider("Pitch", -12, 12, chop["pitch"], key=f"pitch_{chop['id']}")
-        with c2:
-            chop["reverse"] = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
-        with c3:
-            chop["style"] = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"],
-                                         index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
-                                         key=f"style_{chop['id']}")
+            c4, c5 = st.columns(2)
+            with c4:
+                chop["eq"] = st.selectbox("EQ / Filter", ["None", "Low shelf", "High shelf", "Low-pass", "High-pass"],
+                                          index=["None","Low shelf","High shelf","Low-pass","High-pass"].index(chop["eq"]),
+                                          key=f"eq_{chop['id']}")
+            with c5:
+                if chop["eq"] != "None":
+                    chop["eq_amount"] = st.slider("Amount", 0.0, 1.0, chop["eq_amount"], 0.05, key=f"eqamt_{chop['id']}")
 
-        c4, c5 = st.columns(2)
-        with c4:
-            chop["eq"] = st.selectbox("EQ", ["None", "Low shelf", "High shelf"],
-                                      index=["None","Low shelf","High shelf"].index(chop["eq"]),
-                                      key=f"eq_{chop['id']}")
-        with c5:
+            c6, c7 = st.columns(2)
+            with c6:
+                chop["fade_in"] = st.slider("Fade in", 0, 60, chop["fade_in"], 2, key=f"fi_{chop['id']}")
+            with c7:
+                chop["fade_out"] = st.slider("Fade out", 0, 60, chop["fade_out"], 2, key=f"fo_{chop['id']}")
+
+            chop["volume"] = st.slider("Volume", 0.6, 1.4, chop["volume"], 0.05, key=f"vol_{chop['id']}")
+            chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
+
+            start_sample = int(max(0, chop["start"]) * sr)
+            end_sample = int(min(chop["end"], duration) * sr)
+            seg = y_full[start_sample:end_sample].copy()
+
+            if chop["pitch"] != 0:
+                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
+            if chop["reverse"]:
+                seg = seg[::-1]
+            seg = process(seg, chop["style"])
+            seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
+            seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
+            seg = norm(seg, chop["volume"])
+
+            name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
+            if chop["pitch"] != 0:
+                name += f"_p{chop['pitch']:+d}"
+            if chop["reverse"]:
+                name += "_rev"
+            if chop["style"] != "Clean":
+                name += f"_{chop['style'].lower()}"
             if chop["eq"] != "None":
-                chop["eq_amount"] = st.slider("EQ amount", 0.0, 1.0, chop["eq_amount"], 0.05, key=f"eqamt_{chop['id']}")
+                name += f"_{chop['eq'].lower().replace(' ','')}"
+            name += ".wav"
 
-        c6, c7 = st.columns(2)
-        with c6:
-            chop["fade_in"] = st.slider("Fade in (ms)", 0, 80, chop["fade_in"], 2, key=f"fi_{chop['id']}")
-        with c7:
-            chop["fade_out"] = st.slider("Fade out (ms)", 0, 80, chop["fade_out"], 2, key=f"fo_{chop['id']}")
+            tmp_path = os.path.join(out_dir, name)
+            sf.write(tmp_path, seg, sr)
+            if chop["include"]:
+                included_files.append(tmp_path)
 
-        chop["volume"] = st.slider("Volume", 0.5, 1.5, chop["volume"], 0.05, key=f"vol_{chop['id']}")
-        chop["crossfade"] = st.slider("Loop crossfade (ms)", 0, 80, chop["crossfade"], 2, key=f"cf_{chop['id']}")
+            st.markdown("**Single**")
+            st.audio(tmp_path)
+            with open(tmp_path, "rb") as f:
+                st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        start_sample = int(max(0, chop["start"]) * sr)
-        end_sample = int(min(chop["end"], duration) * sr)
-        seg = y_full[start_sample:end_sample].copy()
-
-        if chop["pitch"] != 0:
-            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
-        if chop["reverse"]:
-            seg = seg[::-1]
-        seg = process(seg, chop["style"])
-        seg = apply_eq(seg, chop["eq"], chop["eq_amount"])
-        seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
-        seg = norm(seg, chop["volume"])
-
-        name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
-        if chop["pitch"] != 0:
-            name += f"_p{chop['pitch']:+d}"
-        if chop["reverse"]:
-            name += "_rev"
-        if chop["style"] != "Clean":
-            name += f"_{chop['style'].lower()}"
-        if chop["eq"] != "None":
-            name += f"_{chop['eq'].lower().replace(' ','')}"
-        name += ".wav"
-
-        tmp_path = os.path.join(out_dir, name)
-        sf.write(tmp_path, seg, sr)
-        if chop["include"]:
-            included_files.append(tmp_path)
-
-        st.markdown("**Single**")
-        st.audio(tmp_path)
-        with open(tmp_path, "rb") as f:
-            st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
-
-        loop_seg = seg[::-1] if chop["reverse"] else seg
-        looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
-        loop_name = name.replace(".wav", "_loop.wav")
-        loop_path = os.path.join(out_dir, loop_name)
-        sf.write(loop_path, looped, sr)
-        if chop["include"]:
-            included_files.append(loop_path)
-        st.markdown(f"**Loop (4x, {chop['crossfade']}ms crossfade)**")
-        st.audio(loop_path)
-
-    # A/B
-    st.divider()
-    st.subheader("Compare chops")
-    if len(st.session_state.auto_chops) >= 2:
-        ids = [c["id"] for c in st.session_state.auto_chops]
-        a = st.selectbox("Chop A", ids, key="cmp_a")
-        b = st.selectbox("Chop B", ids, index=min(1, len(ids)-1), key="cmp_b")
-        if st.button("Play A then B"):
-            st.success(f"Playing Chop {a} then Chop {b}")
+            loop_seg = seg[::-1] if chop["reverse"] else seg
+            looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
+            loop_name = name.replace(".wav", "_loop.wav")
+            loop_path = os.path.join(out_dir, loop_name)
+            sf.write(loop_path, looped, sr)
+            if chop["include"]:
+                included_files.append(loop_path)
+            st.markdown(f"**Loop (4x)**")
+            st.audio(loop_path)
 
     # One-shots
     st.divider()
@@ -303,8 +299,8 @@ if uploaded:
     include_oneshots = st.checkbox("Include one-shots in pack", value=True)
 
     for i, (onset, energy) in enumerate(oneshots, 1):
-        window = y_full[int(onset*sr):int((onset+0.45)*sr)]
-        window = apply_fade(window, 5, 5, sr)
+        window = y_full[int(onset*sr):int((onset+0.4)*sr)]
+        window = apply_fade(window, 4, 4, sr)
         window = norm(window)
         os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
         os_path = os.path.join(out_dir, os_name)
