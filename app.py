@@ -110,8 +110,16 @@ if uploaded:
             seg = y[int(start*sr):int(end*sr)].copy()
             seg = process(seg, style)
             seg = norm(seg)
+
+            # Apply pitch if set
+            if pitch != 0:
+                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+                seg = norm(seg)
+
             abs_start = region_start + start
             base = f"{int(bpm)}bpm_{key}_{style.lower()}_{i:02d}_{abs_start:.1f}s"
+            if pitch != 0:
+                base += f"_p{pitch:+d}"
 
             loop_path = os.path.join(out, base + "_loop.wav")
             sf.write(loop_path, seg, sr)
