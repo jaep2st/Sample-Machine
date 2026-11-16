@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · mute · make all loops · sample map")
+st.caption("Best chops · reverse · reset · favorites")
 
 def process(seg, style):
     if style == "Dusty":
@@ -92,6 +92,15 @@ def apply_swing(seg, sr, swing_amount):
     if start2 < len(swung) and src_end > src_start:
         swung[start2:end2] = seg[src_start:src_end]
     return swung
+
+def smart_reverse(seg, sr):
+    # Reverse but keep the first 40ms transient at the front
+    transient_len = min(int(0.04 * sr), len(seg)//4)
+    if transient_len < 100:
+        return np.flip(seg).copy()
+    transient = seg[:transient_len].copy()
+    rest = np.flip(seg[transient_len:]).copy()
+    return np.concatenate([transient, rest])
 
 def norm(seg, gain=1.0):
     peak = np.max(np.abs(seg))
@@ -238,7 +247,8 @@ if uploaded:
                     "locked": False,
                     "swing": 0.0,
                     "solo": False,
-                    "mute": False
+                    "mute": False,
+                    "favorite": False
                 })
 
     bpm = st.session_state.bpm
@@ -254,6 +264,7 @@ if uploaded:
                 last["locked"] = False
                 last["solo"] = False
                 last["mute"] = False
+                last["favorite"] = False
                 st.session_state.auto_chops.append(last)
                 st.rerun()
     with col_all:
@@ -300,10 +311,11 @@ if uploaded:
     oneshot_files = []
     loop_points = []
     sample_map = []
+    favorites = []
 
     for chop in st.session_state.auto_chops:
         with st.expander(f"Chop {chop['id']} · Score: {chop['score']:.2f}", expanded=True):
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
                 chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
             with c2:
@@ -312,6 +324,24 @@ if uploaded:
                 chop["solo"] = st.checkbox("Solo", value=chop["solo"], key=f"solo_{chop['id']}")
             with c4:
                 chop["mute"] = st.checkbox("Mute", value=chop["mute"], key=f"mute_{chop['id']}")
+            with c5:
+                chop["favorite"] = st.checkbox("Favorite", value=chop["favorite"], key=f"fav_{chop['id']}")
+
+            if st.button("Reset", key=f"reset_{chop['id']}"):
+                chop["start"] = chop["orig_start"]
+                chop["end"] = chop["orig_end"]
+                chop["pitch"] = 0
+                chop["reverse"] = False
+                chop["style"] = "Clean"
+                chop["eq"] = "None"
+                chop["eq_amount"] = 0.7
+                chop["fade_in"] = 6
+                chop["fade_out"] = 6
+                chop["crossfade"] = 12
+                chop["volume"] = 1.0
+                chop["swing"] = 0.0
+                chop["humanize"] = False
+                st.rerun()
 
             if not chop["locked"]:
                 preview_start = max(0, chop["start"] - 0.5)
@@ -392,7 +422,7 @@ if uploaded:
             if chop["pitch"] != 0:
                 seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
             if chop["reverse"]:
-                seg = np.flip(seg).copy()
+                seg = smart_reverse(seg, sr)
             seg = process(seg, chop["style"])
             seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
             seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
@@ -408,6 +438,8 @@ if uploaded:
                 name += f"_{chop['style'].lower()}"
             if chop["eq"] != "None":
                 name += f"_{chop['eq'].lower().replace(' ','')}"
+            if chop["favorite"]:
+                name += "_fav"
             name += ".wav"
 
             tmp_path = os.path.join(out_dir, name)
@@ -417,13 +449,15 @@ if uploaded:
                 included_files.append(tmp_path)
                 loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
                 sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
+                if chop["favorite"]:
+                    favorites.append(f"Chop {chop['id']} (favorite)")
 
             st.markdown("**Single**")
             st.audio(tmp_path)
             with open(tmp_path, "rb") as f:
                 st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-            loop_seg = np.flip(seg).copy() if chop["reverse"] else seg
+            loop_seg = smart_reverse(seg, sr) if chop["reverse"] else seg
             looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
             loop_name = name.replace(".wav", "_loop.wav")
             loop_path = os.path.join(out_dir, loop_name)
@@ -432,6 +466,16 @@ if uploaded:
                 included_files.append(loop_path)
             st.markdown("**Loop (4x)**")
             st.audio(loop_path)
+
+    # Session note
+    if favorites or loop_points:
+        note = f"BPM: {bpm:.1f}\nKey: {key}\n\nFavorites:\n" + "\n".join(favorites) if favorites else "None"
+        note += "\n\nLoop Points:\n" + "\n".join(loop_points)
+        note_path = os.path.join(out_dir, "session_note.txt")
+        with open(note_path, "w") as f:
+            f.write(note)
+        with open(note_path, "rb") as f:
+            st.download_button("Download Session Note", f, file_name="session_note.txt", key="note")
 
     # Sample map
     if sample_map:
@@ -460,7 +504,7 @@ if uploaded:
         with open(points_path, "rb") as f:
             st.download_button("Download Loop Points", f, file_name="loop_points.txt", key="points")
 
-    # One-shots with pitch
+    # One-shots
     st.divider()
     st.subheader("One-shots")
     max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
@@ -475,7 +519,7 @@ if uploaded:
         if oneshot_pitch != 0:
             window = librosa.effects.pitch_shift(window, sr=sr, n_steps=oneshot_pitch)
         if reverse_oneshots:
-            window = np.flip(window).copy()
+            window = smart_reverse(window, sr)
         window = apply_fade(window, 4, 4, sr)
         window = norm(window)
         os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s"
