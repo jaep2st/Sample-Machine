@@ -6,10 +6,11 @@ from pathlib import Path
 import numpy as np
 import librosa
 import soundfile as sf
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Target the parts you want")
+st.caption("Target sections and refine chops")
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
@@ -29,116 +30,35 @@ if uploaded:
         st.warning("End must be after start")
         st.stop()
 
+    # Waveform of selected region
+    y_region = y_full[int(region_start*sr):int(region_end*sr)]
+    fig, ax = plt.subplots(figsize=(10, 2))
+    times = np.linspace(region_start, region_end, len(y_region))
+    ax.plot(times, y_region, color="#e74c3c", linewidth=0.5)
+    ax.set_xlim(region_start, region_end)
+    ax.set_ylim(-1, 1)
+    ax.axis("off")
+    st.pyplot(fig)
+    plt.close()
+
     bars = st.slider("Bars", 1, 8, 4)
     pitch = st.slider("Pitch", -12, 12, 0)
     style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"])
     max_chops = st.slider("Chops", 1, 8, 3)
     normalize = st.checkbox("Normalize", value=True)
 
+    if "chops" not in st.session_state:
+        st.session_state.chops = []
+
     if st.button("Chop this section"):
         with st.spinner("Chopping..."):
-            y = y_full[int(region_start*sr):int(region_end*sr)]
+            y = y_region
             tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
             bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
             beat_times = librosa.frames_to_time(beats, sr=sr)
             chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
             key = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][int(np.argmax(np.mean(chroma, axis=1)))]
-            st.write(f"{bpm:.1f} BPM | {key}")
 
             onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
             rms = librosa.feature.rms(y=y)[0]
-            times = librosa.times_like(rms, sr=sr)
-            bar_dur = (bars * 4 * 60) / bpm
-
-            cands = []
-            for start in onsets:
-                end = start + bar_dur
-                if end > len(y)/sr - 0.05:
-                    continue
-                mask = (times >= start) & (times <= end)
-                if not np.any(mask):
-                    continue
-                energy = float(np.mean(rms[mask]))
-                bonus = 0
-                if len(beat_times):
-                    dist = min(abs(start - bt) for bt in beat_times)
-                    bonus = max(0, 1 - dist * 5)
-                cands.append((start, end, energy * (1 + bonus)))
-
-            cands.sort(key=lambda x: x[2], reverse=True)
-            selected = []
-            for s, e, sc in cands:
-                overlap = False
-                for ss, se, _ in selected:
-                    if s < se and e > ss:
-                        overlap = True
-                        break
-                if not overlap:
-                    selected.append((s, e, sc))
-                if len(selected) >= max_chops:
-                    break
-
-            out = tempfile.mkdtemp()
-            files = []
-
-            def process(seg, style):
-                if style == "Dusty":
-                    seg = np.convolve(seg, np.ones(17)/17, mode="same")
-                    seg = np.tanh(seg * 1.25) * 0.88
-                elif style == "Warm":
-                    seg = np.convolve(seg, np.ones(7)/7, mode="same")
-                    seg = np.tanh(seg * 1.1) * 0.94
-                elif style == "Dark":
-                    seg = np.convolve(seg, np.ones(31)/31, mode="same")
-                    seg = seg * 0.7
-                return seg
-
-            def norm(seg):
-                if not normalize or len(seg) == 0:
-                    return seg
-                peak = np.max(np.abs(seg))
-                if peak > 0:
-                    return seg / peak * 0.95
-                return seg
-
-            for i, (start, end, _) in enumerate(selected, 1):
-                seg = y[int(start*sr):int(end*sr)].copy()
-                seg = process(seg, style)
-                seg = norm(seg)
-                abs_start = region_start + start
-                base = f"{int(bpm)}bpm_{key}_{style.lower()}_{i:02d}_{abs_start:.1f}s"
-
-                p = os.path.join(out, base + "_loop.wav")
-                sf.write(p, seg, sr)
-                files.append(p)
-
-                env = np.abs(seg)
-                if len(env) > 10:
-                    peak_idx = np.argmax(env[:int(sr*0.4)])
-                    oneshot = seg[max(0, peak_idx-int(sr*0.015)):peak_idx+int(sr*1.5)]
-                    oneshot = norm(oneshot)
-                    p = os.path.join(out, base + "_oneshot.wav")
-                    sf.write(p, oneshot, sr)
-                    files.append(p)
-
-                if pitch != 0:
-                    pitched = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
-                    pitched = norm(pitched)
-                    p = os.path.join(out, base + f"_p{pitch}.wav")
-                    sf.write(p, pitched, sr)
-                    files.append(p)
-
-        st.success(f"{len(selected)} chops")
-
-        for fpath in files:
-            name = Path(fpath).name
-            st.audio(fpath)
-            with open(fpath, "rb") as fh:
-                st.download_button("Save", fh, file_name=name, mime="audio/wav", key=name)
-
-        zpath = os.path.join(out, "pack.zip")
-        with zipfile.ZipFile(zpath, "w") as zf:
-            for fpath in files:
-                zf.write(fpath, Path(fpath).name)
-        with open(zpath, "rb") as fh:
-            st.download_button("Download Pack", fh, file_name="sample_pack.zip")
+            t = librosa.times_like(rms, sr=sr)
