@@ -90,9 +90,6 @@ if uploaded:
     humanize = st.checkbox("Humanize starts", value=True)
     normalize = st.checkbox("Normalize", value=True)
 
-    if "chops" not in st.session_state:
-        st.session_state.chops = []
-
     if st.button("Chop this section", type="primary"):
         y = y_region.copy()
 
@@ -137,12 +134,11 @@ if uploaded:
             if len(selected) >= max_chops:
                 break
 
-        st.session_state.chops = []
-        st.session_state.meta = {
-            "bpm": bpm, "key": key, "y": y, "sr": sr,
-            "region_start": region_start, "style": style, "pitch": pitch, "mode": mode,
-            "fade_ms": fade_ms, "normalize": normalize
-        }
+        st.write(f"**{bpm:.1f} BPM** · **{key}** · {mode}")
+        st.success(f"{len(selected)} chops")
+
+        out = tempfile.mkdtemp()
+        files = []
 
         for i, (start, end, _) in enumerate(selected, 1):
             if humanize:
@@ -154,3 +150,38 @@ if uploaded:
             seg = process(seg, style)
             seg = apply_fade(seg, fade_ms, sr)
             seg = norm(seg, normalize)
+
+            abs_start = region_start + start
+            base = f"{int(bpm)}bpm_{key}_{style.lower()}_{mode.lower()}_{i:02d}_{abs_start:.1f}s"
+            if pitch != 0:
+                base += f"_p{pitch:+d}"
+
+            loop_path = os.path.join(out, base + "_loop.wav")
+            sf.write(loop_path, seg, sr)
+            files.append(loop_path)
+
+            st.markdown(f"**{base}**")
+            st.audio(loop_path)
+            with open(loop_path, "rb") as fh:
+                st.download_button("Save loop", fh, file_name=Path(loop_path).name, mime="audio/wav", key=f"loop_{i}")
+
+            env = np.abs(seg)
+            if len(env) > 10:
+                peak_idx = np.argmax(env[:int(sr*0.4)])
+                os_len = int(oneshot_len * sr)
+                oneshot = seg[max(0, peak_idx-int(sr*0.02)):peak_idx+os_len]
+                oneshot = norm(oneshot, normalize)
+                os_path = os.path.join(out, base + "_oneshot.wav")
+                sf.write(os_path, oneshot, sr)
+                files.append(os_path)
+                st.audio(os_path)
+                with open(os_path, "rb") as fh:
+                    st.download_button("Save oneshot", fh, file_name=Path(os_path).name, mime="audio/wav", key=f"os_{i}")
+
+        if files:
+            zpath = os.path.join(out, "pack.zip")
+            with zipfile.ZipFile(zpath, "w") as zf:
+                for fpath in files:
+                    zf.write(fpath, Path(fpath).name)
+            with open(zpath, "rb") as fh:
+                st.download_button("Download Pack", fh, file_name="sample_pack.zip", key="zip")
