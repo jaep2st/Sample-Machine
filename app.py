@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · adjust · hear the loop")
+st.caption("Best chops · loop preview · one-shots")
 
 def process(seg, style):
     if style == "Dusty":
@@ -36,6 +36,11 @@ def apply_fade(seg, fade_ms, sr):
 def norm(seg):
     peak = np.max(np.abs(seg))
     return seg / peak * 0.95 if peak > 0 else seg
+
+def detect_key(y, sr):
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+    key_idx = int(np.argmax(np.mean(chroma, axis=1)))
+    return ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][key_idx]
 
 def find_best_chops(y, sr, bars=4, max_chops=6):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
@@ -79,6 +84,19 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
     
     return selected, bpm
 
+def extract_oneshots(y, sr, max_shots=4):
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
+    shots = []
+    for onset in onsets[:40]:
+        window = y[int(onset*sr):int((onset+0.35)*sr)]
+        if len(window) < 100:
+            continue
+        energy = float(np.mean(np.abs(window)))
+        if energy > 0.09:
+            shots.append((onset, energy))
+    shots.sort(key=lambda x: x[1], reverse=True)
+    return shots[:max_shots]
+
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
@@ -88,13 +106,15 @@ if uploaded:
 
     y_full, sr = librosa.load(path, sr=44100, mono=True)
     duration = len(y_full) / sr
-    st.write(f"Track length: {duration:.1f}s")
+    key = detect_key(y_full, sr)
+    st.write(f"Track length: {duration:.1f}s · **{key}**")
 
     if "auto_chops" not in st.session_state or st.session_state.get("last_file") != uploaded.name:
         with st.spinner("Finding the best chops..."):
             selected, bpm = find_best_chops(y_full, sr, bars=4, max_chops=6)
             st.session_state.auto_chops = []
             st.session_state.bpm = bpm
+            st.session_state.key = key
             st.session_state.last_file = uploaded.name
             
             for i, (start, end, _) in enumerate(selected, 1):
@@ -109,7 +129,8 @@ if uploaded:
                     "style": "Clean"
                 })
 
-    st.write(f"**{st.session_state.bpm:.1f} BPM**")
+    bpm = st.session_state.bpm
+    st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
     out_dir = tempfile.mkdtemp()
     all_files = []
@@ -147,8 +168,16 @@ if uploaded:
         seg = apply_fade(seg, 12, sr)
         seg = norm(seg)
 
-        # Single version
-        name = f"chop_{chop['id']:02d}_{chop['start']:.1f}-{chop['end']:.1f}s.wav"
+        # Clean naming
+        name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
+        if chop["pitch"] != 0:
+            name += f"_p{chop['pitch']:+d}"
+        if chop["reverse"]:
+            name += "_rev"
+        if chop["style"] != "Clean":
+            name += f"_{chop['style'].lower()}"
+        name += ".wav"
+
         tmp_path = os.path.join(out_dir, name)
         sf.write(tmp_path, seg, sr)
         all_files.append(tmp_path)
@@ -158,14 +187,29 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        # Loop version (4 repeats)
+        # Loop preview
         looped = np.concatenate([seg] * 4)
-        loop_name = f"loop_{chop['id']:02d}.wav"
-        loop_path = os.path.join(out_dir, loop_name)
+        loop_path = os.path.join(out_dir, f"loop_{chop['id']}.wav")
         sf.write(loop_path, looped, sr)
-
         st.markdown("**Loop (4x)**")
         st.audio(loop_path)
+
+    # One-shots
+    st.divider()
+    st.subheader("One-shots")
+    oneshots = extract_oneshots(y_full, sr, max_shots=4)
+    for i, (onset, energy) in enumerate(oneshots, 1):
+        window = y_full[int(onset*sr):int((onset+0.5)*sr)]
+        window = apply_fade(window, 6, sr)
+        window = norm(window)
+        os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
+        os_path = os.path.join(out_dir, os_name)
+        sf.write(os_path, window, sr)
+        all_files.append(os_path)
+        st.markdown(f"**One-shot {i}** · {onset:.1f}s")
+        st.audio(os_path)
+        with open(os_path, "rb") as f:
+            st.download_button("Download oneshot", f, file_name=os_name, mime="audio/wav", key=f"os_{i}")
 
     if all_files:
         zpath = os.path.join(out_dir, "sample_pack.zip")
@@ -173,4 +217,4 @@ if uploaded:
             for fpath in all_files:
                 zf.write(fpath, Path(fpath).name)
         with open(zpath, "rb") as f:
-            st.download_button("Download All Singles", f, file_name="sample_pack.zip", key="pack")
+            st.download_button("Download Full Pack", f, file_name="sample_pack.zip", key="pack")
