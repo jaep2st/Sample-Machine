@@ -70,3 +70,73 @@ if uploaded:
             energy = float(np.mean(rms[mask]))
             bonus = 0.0
             if len(beat_times):
+                dist = min(abs(start - bt) for bt in beat_times)
+                bonus = max(0.0, 1.0 - dist * 5)
+            cands.append((start, end, energy * (1 + bonus)))
+
+        cands.sort(key=lambda x: x[2], reverse=True)
+        selected = []
+        for s, e, sc in cands:
+            if all(not (s < se and e > ss) for ss, se, _ in selected):
+                selected.append((s, e, sc))
+            if len(selected) >= max_chops:
+                break
+
+        def process(seg, style):
+            if style == "Dusty":
+                seg = np.convolve(seg, np.ones(17)/17, mode="same")
+                seg = np.tanh(seg * 1.25) * 0.88
+            elif style == "Warm":
+                seg = np.convolve(seg, np.ones(7)/7, mode="same")
+                seg = np.tanh(seg * 1.1) * 0.94
+            elif style == "Dark":
+                seg = np.convolve(seg, np.ones(31)/31, mode="same")
+                seg = seg * 0.7
+            return seg
+
+        def norm(seg):
+            if not normalize or len(seg) == 0:
+                return seg
+            peak = np.max(np.abs(seg))
+            return seg / peak * 0.95 if peak > 0 else seg
+
+        out = tempfile.mkdtemp()
+        files = []
+
+        st.write(f"**{bpm:.1f} BPM** · **{key}**")
+        st.success(f"{len(selected)} chops")
+
+        for i, (start, end, _) in enumerate(selected, 1):
+            seg = y[int(start*sr):int(end*sr)].copy()
+            seg = process(seg, style)
+            seg = norm(seg)
+            abs_start = region_start + start
+            base = f"{int(bpm)}bpm_{key}_{style.lower()}_{i:02d}_{abs_start:.1f}s"
+
+            loop_path = os.path.join(out, base + "_loop.wav")
+            sf.write(loop_path, seg, sr)
+            files.append(loop_path)
+            st.markdown(f"**{base}**")
+            st.audio(loop_path)
+            with open(loop_path, "rb") as fh:
+                st.download_button("Save loop", fh, file_name=Path(loop_path).name, mime="audio/wav", key=f"loop_{i}")
+
+            env = np.abs(seg)
+            if len(env) > 10:
+                peak_idx = np.argmax(env[:int(sr*0.4)])
+                oneshot = seg[max(0, peak_idx-int(sr*0.015)):peak_idx+int(sr*1.5)]
+                oneshot = norm(oneshot)
+                os_path = os.path.join(out, base + "_oneshot.wav")
+                sf.write(os_path, oneshot, sr)
+                files.append(os_path)
+                st.audio(os_path)
+                with open(os_path, "rb") as fh:
+                    st.download_button("Save oneshot", fh, file_name=Path(os_path).name, mime="audio/wav", key=f"os_{i}")
+
+        if files:
+            zpath = os.path.join(out, "pack.zip")
+            with zipfile.ZipFile(zpath, "w") as zf:
+                for fpath in files:
+                    zf.write(fpath, Path(fpath).name)
+            with open(zpath, "rb") as fh:
+                st.download_button("Download Pack", fh, file_name="sample_pack.zip", key="zip")
