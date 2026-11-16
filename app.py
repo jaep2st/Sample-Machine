@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · session · duplicate · tighter one-shots")
+st.caption("Best chops · solo · clean loop · MIDI map")
 
 def process(seg, style):
     if style == "Dusty":
@@ -75,14 +75,17 @@ def apply_crossfade_loop(seg, sr, crossfade_ms=15):
     return np.concatenate(looped)
 
 def apply_swing(seg, sr, swing_amount):
-    if swing_amount <= 0:
+    if swing_amount <= 0.05:
         return seg
-    half = len(seg) // 2
-    delay = int(swing_amount * 0.04 * sr)
-    if delay > 0 and half > delay:
-        swung = seg.copy()
-        swung[half:half+delay] = seg[half-delay:half]
-        return swung
+    # More musical swing: delay the backbeat portion
+    third = len(seg) // 3
+    delay = int(swing_amount * 0.035 * sr)
+    if delay > 0 and third > delay:
+        swung = np.zeros_like(seg)
+        swung[:third] = seg[:third]
+        swung[third+delay:third+delay+third] = seg[third:third+third]
+        swung[third+delay+third:] = seg[third+third:]
+        return swung[:len(seg)]
     return seg
 
 def norm(seg, gain=1.0):
@@ -223,24 +226,25 @@ if uploaded:
                     "eq_amount": 0.7,
                     "fade_in": 6,
                     "fade_out": 6,
-                    "crossfade": 15,
+                    "crossfade": 12,
                     "volume": 1.0,
                     "include": True,
                     "humanize": False,
                     "locked": False,
-                    "swing": 0.0
+                    "swing": 0.0,
+                    "solo": False
                 })
 
     bpm = st.session_state.bpm
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
-    # Duplicate chop
     if st.button("Duplicate last chop"):
         if st.session_state.auto_chops:
             last = st.session_state.auto_chops[-1].copy()
             last["id"] = max(c["id"] for c in st.session_state.auto_chops) + 1
             last["locked"] = False
+            last["solo"] = False
             st.session_state.auto_chops.append(last)
             st.rerun()
 
@@ -276,20 +280,23 @@ if uploaded:
     included_files = []
     oneshot_files = []
     loop_points = []
+    midi_notes = []
 
     for chop in st.session_state.auto_chops:
         with st.expander(f"Chop {chop['id']} · Score: {chop['score']:.2f}", expanded=True):
-            col_inc, col_lock = st.columns(2)
-            with col_inc:
-                chop["include"] = st.checkbox("Include in pack", value=chop["include"], key=f"inc_{chop['id']}")
-            with col_lock:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
+            with col2:
                 chop["locked"] = st.checkbox("Lock", value=chop["locked"], key=f"lock_{chop['id']}")
+            with col3:
+                chop["solo"] = st.checkbox("Solo", value=chop["solo"], key=f"solo_{chop['id']}")
 
             if not chop["locked"]:
                 preview_start = max(0, chop["start"] - 0.5)
                 preview_end = min(duration, chop["end"] + 0.5)
                 y_preview = y_full[int(preview_start*sr):int(preview_end*sr)]
-                fig, ax = plt.subplots(figsize=(8, 1.2))
+                fig, ax = plt.subplots(figsize=(8, 1.1))
                 times = np.linspace(preview_start, preview_end, len(y_preview))
                 ax.plot(times, y_preview, color="#e74c3c", linewidth=0.6)
                 ax.axvline(chop["start"], color="white", linewidth=1, linestyle="--")
@@ -310,9 +317,12 @@ if uploaded:
                 if chop["end"] <= chop["start"] + 0.15:
                     chop["end"] = chop["start"] + 0.15
 
-                if st.button("Make it loop", key=f"loopbtn_{chop['id']}"):
+                if st.button("Clean loop", key=f"clean_{chop['id']}"):
                     chop["start"] = snap_to_nearest_beat(chop["start"], beat_times)
                     chop["end"] = snap_to_nearest_beat(chop["end"], beat_times)
+                    chop["crossfade"] = max(chop["crossfade"], 18)
+                    chop["fade_in"] = max(chop["fade_in"], 8)
+                    chop["fade_out"] = max(chop["fade_out"], 8)
 
                 chop["humanize"] = st.checkbox("Humanize start", value=chop["humanize"], key=f"hum_{chop['id']}")
 
@@ -347,7 +357,7 @@ if uploaded:
 
             start_use = chop["start"]
             if chop["humanize"] and not chop["locked"]:
-                start_use += np.random.uniform(-0.025, 0.025)
+                start_use += np.random.uniform(-0.02, 0.02)
                 start_use = max(0, start_use)
 
             start_sample = int(start_use * sr)
@@ -377,9 +387,10 @@ if uploaded:
 
             tmp_path = os.path.join(out_dir, name)
             sf.write(tmp_path, seg, sr)
-            if chop["include"]:
+            if chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]):
                 included_files.append(tmp_path)
                 loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
+                midi_notes.append(f"{chop['id']}, {start_use:.3f}, {chop['end']-start_use:.3f}")
 
             st.markdown("**Single**")
             st.audio(tmp_path)
@@ -391,18 +402,23 @@ if uploaded:
             loop_name = name.replace(".wav", "_loop.wav")
             loop_path = os.path.join(out_dir, loop_name)
             sf.write(loop_path, looped, sr)
-            if chop["include"]:
+            if chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]):
                 included_files.append(loop_path)
             st.markdown("**Loop (4x)**")
             st.audio(loop_path)
 
+    # MIDI map
+    if midi_notes:
+        midi_text = "Chop,Start(sec),Length(sec)\n" + "\n".join(midi_notes)
+        midi_path = os.path.join(out_dir, "midi_map.csv")
+        with open(midi_path, "w") as f:
+            f.write(midi_text)
+        with open(midi_path, "rb") as f:
+            st.download_button("Download MIDI Map", f, file_name="midi_map.csv", key="midi")
+
     # Session export
     if st.button("Export session"):
-        session_data = {
-            "bpm": bpm,
-            "key": key,
-            "chops": st.session_state.auto_chops
-        }
+        session_data = {"bpm": bpm, "key": key, "chops": st.session_state.auto_chops}
         session_path = os.path.join(out_dir, "session.json")
         with open(session_path, "w") as f:
             json.dump(session_data, f, default=str)
@@ -418,7 +434,7 @@ if uploaded:
         with open(points_path, "rb") as f:
             st.download_button("Download Loop Points", f, file_name="loop_points.txt", key="points")
 
-    # One-shots with reverse
+    # One-shots
     st.divider()
     st.subheader("One-shots")
     max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
