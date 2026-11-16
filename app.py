@@ -24,21 +24,28 @@ def process(seg, style):
     return seg
 
 def apply_eq(seg, sr, eq_type, amount):
-    if eq_type == "None" or amount == 0:
+    if eq_type == "None" or amount <= 0:
         return seg
-    amount = amount * 0.6  # keep it musical
+    amount = max(0.1, amount)
+    
     if eq_type == "Low shelf":
-        # Boost/cut lows
-        low = np.convolve(seg, np.ones(11)/11, mode="same")
-        return seg + low * amount
+        low = np.convolve(seg, np.ones(21)/21, mode="same")
+        return seg * (1 - amount * 0.4) + low * (1 + amount * 1.2)
+    
     if eq_type == "High shelf":
-        # Boost/cut highs
-        high = seg - np.convolve(seg, np.ones(7)/7, mode="same")
-        return seg + high * amount
+        high = seg - np.convolve(seg, np.ones(5)/5, mode="same")
+        return seg + high * amount * 2.5
+    
     if eq_type == "Low-pass":
-        return np.convolve(seg, np.ones(int(5 + amount*15))/int(5 + amount*15), mode="same")
+        kernel_size = int(7 + amount * 25)
+        kernel = np.ones(kernel_size) / kernel_size
+        return np.convolve(seg, kernel, mode="same")
+    
     if eq_type == "High-pass":
-        return seg - np.convolve(seg, np.ones(int(3 + amount*8))/int(3 + amount*8), mode="same")
+        kernel_size = int(5 + amount * 15)
+        low = np.convolve(seg, np.ones(kernel_size)/kernel_size, mode="same")
+        return (seg - low) * (1 + amount * 0.8)
+    
     return seg
 
 def apply_fade(seg, fade_in_ms, fade_out_ms, sr):
@@ -53,7 +60,7 @@ def apply_fade(seg, fade_in_ms, fade_out_ms, sr):
             seg[-fo:] *= np.linspace(1, 0, fo)
     return seg
 
-def apply_crossfade_loop(seg, sr, crossfade_ms=20):
+def apply_crossfade_loop(seg, sr, crossfade_ms=15):
     if crossfade_ms <= 0 or len(seg) < sr * 0.15:
         return np.concatenate([seg] * 4)
     cf = int(crossfade_ms / 1000 * sr)
@@ -189,7 +196,7 @@ if uploaded:
                     "reverse": False,
                     "style": "Clean",
                     "eq": "None",
-                    "eq_amount": 0.4,
+                    "eq_amount": 0.7,
                     "fade_in": 6,
                     "fade_out": 6,
                     "crossfade": 15,
@@ -288,10 +295,9 @@ if uploaded:
             sf.write(loop_path, looped, sr)
             if chop["include"]:
                 included_files.append(loop_path)
-            st.markdown(f"**Loop (4x)**")
+            st.markdown("**Loop (4x)**")
             st.audio(loop_path)
 
-    # One-shots
     st.divider()
     st.subheader("One-shots")
     max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
