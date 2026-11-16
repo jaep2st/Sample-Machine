@@ -65,32 +65,16 @@ if uploaded:
             segment = y[start_sample:end_sample]
             base = f"chop_{idx:02d}_{bars}bars"
 
-            # Original
             p = os.path.join(out_dir, f"{base}_original.wav")
             sf.write(p, segment, sr)
             samples.append(p)
 
-            # Pitched
             if pitch != 0:
                 pitched = librosa.effects.pitch_shift(segment, sr=sr, n_steps=pitch)
                 p = os.path.join(out_dir, f"{base}_pitched_{pitch:+d}.wav")
                 sf.write(p, pitched, sr)
                 samples.append(p)
 
-            # Filtered
             window = 15
             filtered = np.convolve(segment, np.ones(window)/window, mode="same")
-            p = os.path.join(out_dir, f"{base}_filtered.wav")
-            sf.write(p, filtered, sr)
-            samples.append(p)
-
-            # Reversed
-            rev = segment[::-1]
-            p = os.path.join(out_dir, f"{base}_reversed.wav")
-            sf.write(p, rev, sr)
-            samples.append(p)
-
-    st.success(f"Found {len(selected)} strong {bars}-bar chops")
-
-    for s in samples:
-        name =
+            p = os.path.join(out_dir,
