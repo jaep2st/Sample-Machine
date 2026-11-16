@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · lock · swing · session")
+st.caption("Best chops · session · duplicate · tighter one-shots")
 
 def process(seg, style):
     if style == "Dusty":
@@ -77,7 +77,6 @@ def apply_crossfade_loop(seg, sr, crossfade_ms=15):
 def apply_swing(seg, sr, swing_amount):
     if swing_amount <= 0:
         return seg
-    # Simple swing by slightly delaying every other beat-ish section
     half = len(seg) // 2
     delay = int(swing_amount * 0.04 * sr)
     if delay > 0 and half > delay:
@@ -140,17 +139,16 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
     return selected, bpm, beat_times
 
 def extract_oneshots(y, sr, max_shots=8):
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True, delta=0.07)
     shots = []
-    for onset in onsets[:100]:
-        window = y[int(onset*sr):int((onset+0.3)*sr)]
-        if len(window) < 80:
+    for onset in onsets[:120]:
+        window = y[int(onset*sr):int((onset+0.25)*sr)]
+        if len(window) < 60:
             continue
         energy = float(np.mean(np.abs(window)))
-        if energy > 0.07:
-            peak = float(np.max(np.abs(window)))
-            if peak > 0.18:
-                shots.append((onset, energy * peak))
+        peak = float(np.max(np.abs(window)))
+        if energy > 0.06 and peak > 0.22:
+            shots.append((onset, energy * peak * 1.5))
     shots.sort(key=lambda x: x[1], reverse=True)
     return shots[:max_shots]
 
@@ -160,6 +158,17 @@ def snap_to_nearest_beat(time, beat_times):
     return beat_times[np.argmin(np.abs(beat_times - time))]
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
+session_upload = st.file_uploader("Load previous session (JSON)", type=["json"])
+
+if session_upload:
+    try:
+        session_data = json.load(session_upload)
+        st.session_state.auto_chops = session_data.get("chops", [])
+        st.session_state.bpm = session_data.get("bpm", 90)
+        st.session_state.key = session_data.get("key", "C")
+        st.success("Session loaded")
+    except Exception:
+        st.error("Could not load session")
 
 if uploaded:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -226,6 +235,15 @@ if uploaded:
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
+    # Duplicate chop
+    if st.button("Duplicate last chop"):
+        if st.session_state.auto_chops:
+            last = st.session_state.auto_chops[-1].copy()
+            last["id"] = max(c["id"] for c in st.session_state.auto_chops) + 1
+            last["locked"] = False
+            st.session_state.auto_chops.append(last)
+            st.rerun()
+
     # Presets
     if "presets" not in st.session_state:
         st.session_state.presets = {}
@@ -268,7 +286,6 @@ if uploaded:
                 chop["locked"] = st.checkbox("Lock", value=chop["locked"], key=f"lock_{chop['id']}")
 
             if not chop["locked"]:
-                # Waveform
                 preview_start = max(0, chop["start"] - 0.5)
                 preview_end = min(duration, chop["end"] + 0.5)
                 y_preview = y_full[int(preview_start*sr):int(preview_end*sr)]
@@ -328,7 +345,6 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
-            # Process (even if locked)
             start_use = chop["start"]
             if chop["humanize"] and not chop["locked"]:
                 start_use += np.random.uniform(-0.025, 0.025)
@@ -402,19 +418,25 @@ if uploaded:
         with open(points_path, "rb") as f:
             st.download_button("Download Loop Points", f, file_name="loop_points.txt", key="points")
 
-    # One-shots
+    # One-shots with reverse
     st.divider()
     st.subheader("One-shots")
     max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
     oneshot_len = st.slider("One-shot length (sec)", 0.3, 1.2, 0.5, 0.05)
+    reverse_oneshots = st.checkbox("Reverse one-shots", value=False)
     oneshots = extract_oneshots(y_full, sr, max_shots=max_oneshots)
     include_oneshots = st.checkbox("Include one-shots in pack", value=True)
 
     for i, (onset, energy) in enumerate(oneshots, 1):
         window = y_full[int(onset*sr):int((onset + oneshot_len)*sr)]
+        if reverse_oneshots:
+            window = window[::-1]
         window = apply_fade(window, 4, 4, sr)
         window = norm(window)
-        os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
+        os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s"
+        if reverse_oneshots:
+            os_name += "_rev"
+        os_name += ".wav"
         os_path = os.path.join(out_dir, os_name)
         sf.write(os_path, window, sr)
         if include_oneshots:
