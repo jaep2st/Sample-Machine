@@ -42,15 +42,21 @@ if uploaded:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        bars = st.slider("Bars", 1, 8, 4)
+        mode = st.selectbox("Mode", ["Phrase", "Micro"])
     with c2:
         pitch = st.slider("Pitch", -12, 12, 0)
     with c3:
         style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"])
 
+    if mode == "Phrase":
+        bars = st.slider("Bars", 1, 8, 4)
+    else:
+        bars = st.slider("Chop length (beats)", 1, 4, 2)
+
     max_chops = st.slider("Chops", 1, 8, 3)
     fade_ms = st.slider("Fade (ms)", 0, 100, 10)
     oneshot_len = st.slider("One-shot length (sec)", 0.5, 3.0, 1.5, 0.1)
+    humanize = st.checkbox("Humanize starts", value=True)
     normalize = st.checkbox("Normalize", value=True)
 
     if "chops" not in st.session_state:
@@ -58,6 +64,11 @@ if uploaded:
 
     if st.button("Chop this section", type="primary"):
         y = y_region.copy()
+
+        # Pitch first
+        if pitch != 0:
+            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=pitch)
+
         tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
         bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
         beat_times = librosa.frames_to_time(beats, sr=sr)
@@ -67,7 +78,11 @@ if uploaded:
         onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
         rms = librosa.feature.rms(y=y)[0]
         t = librosa.times_like(rms, sr=sr)
-        bar_dur = (bars * 4 * 60) / bpm
+
+        if mode == "Phrase":
+            bar_dur = (bars * 4 * 60) / bpm
+        else:
+            bar_dur = (bars * 60) / bpm   # shorter micro chops
 
         cands = []
         for start in onsets:
@@ -124,82 +139,5 @@ if uploaded:
             return seg / peak * 0.95 if peak > 0 else seg
 
         st.session_state.chops = []
-        st.session_state.meta = {"bpm": bpm, "key": key, "y": y, "sr": sr, "region_start": region_start, "style": style, "pitch": pitch}
-
-        for i, (start, end, _) in enumerate(selected, 1):
-            seg = y[int(start*sr):int(end*sr)].copy()
-            seg = process(seg, style)
-            if pitch != 0:
-                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
-            seg = apply_fade(seg, fade_ms, sr)
-            seg = norm(seg)
-            abs_start = region_start + start
-            base = f"{int(bpm)}bpm_{key}_{style.lower()}_{i:02d}_{abs_start:.1f}s"
-            if pitch != 0:
-                base += f"_p{pitch:+d}"
-            st.session_state.chops.append({
-                "base": base,
-                "loop": seg,
-                "start": start,
-                "end": end,
-                "locked": False
-            })
-
-    if st.session_state.chops:
-        meta = st.session_state.meta
-        st.write(f"**{meta['bpm']:.1f} BPM** · **{meta['key']}**")
-        st.success(f"{len(st.session_state.chops)} chops")
-
-        out = tempfile.mkdtemp()
-        files = []
-
-        for idx, chop in enumerate(st.session_state.chops):
-            col1, col2, col3 = st.columns([4, 1, 1])
-            with col1:
-                st.markdown(f"**{chop['base']}**")
-            with col2:
-                chop["locked"] = st.checkbox("Lock", value=chop["locked"], key=f"lock_{idx}")
-            with col3:
-                if not chop["locked"] and st.button("Regen", key=f"regen_{idx}"):
-                    y = meta["y"]
-                    new_start = max(0, chop["start"] + np.random.uniform(-0.4, 0.4))
-                    new_end = new_start + (chop["end"] - chop["start"])
-                    if new_end < len(y)/meta["sr"]:
-                        seg = y[int(new_start*meta["sr"]):int(new_end*meta["sr"])].copy()
-                        seg = process(seg, meta["style"])
-                        if meta["pitch"] != 0:
-                            seg = librosa.effects.pitch_shift(seg, sr=meta["sr"], n_steps=meta["pitch"])
-                        seg = apply_fade(seg, fade_ms, meta["sr"])
-                        seg = norm(seg)
-                        chop["loop"] = seg
-                        chop["start"] = new_start
-                        st.rerun()
-
-            tmp_loop = os.path.join(out, f"tmp_{idx}_loop.wav")
-            sf.write(tmp_loop, chop["loop"], meta["sr"])
-            st.audio(tmp_loop)
-
-            # One-shot
-            env = np.abs(chop["loop"])
-            if len(env) > 10:
-                peak_idx = np.argmax(env[:int(meta["sr"]*0.4)])
-                os_len = int(oneshot_len * meta["sr"])
-                oneshot = chop["loop"][max(0, peak_idx-int(meta["sr"]*0.02)):peak_idx+os_len]
-                oneshot = norm(oneshot)
-                tmp_os = os.path.join(out, f"tmp_{idx}_os.wav")
-                sf.write(tmp_os, oneshot, meta["sr"])
-                st.audio(tmp_os)
-
-            loop_path = os.path.join(out, chop["base"] + "_loop.wav")
-            sf.write(loop_path, chop["loop"], meta["sr"])
-            files.append(loop_path)
-            with open(loop_path, "rb") as fh:
-                st.download_button("Save loop", fh, file_name=Path(loop_path).name, mime="audio/wav", key=f"dl_loop_{idx}")
-
-        if files:
-            zpath = os.path.join(out, "pack.zip")
-            with zipfile.ZipFile(zpath, "w") as zf:
-                for fpath in files:
-                    zf.write(fpath, Path(fpath).name)
-            with open(zpath, "rb") as fh:
-                st.download_button("Download Pack", fh, file_name="sample_pack.zip", key="zip")
+        st.session_state.meta = {
+            "bpm": bpm, "key": key, "y": y,
