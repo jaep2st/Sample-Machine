@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops from the whole track, instantly")
+st.caption("Best chops from the whole track — adjust length as needed")
 
 def process(seg, style):
     if style == "Dusty":
@@ -37,7 +37,7 @@ def norm(seg):
     peak = np.max(np.abs(seg))
     return seg / peak * 0.95 if peak > 0 else seg
 
-def find_best_chops(y, sr, bars=4, max_chops=6, mode="Phrase"):
+def find_best_chops(y, sr, bars=4, max_chops=6):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
     beat_times = librosa.frames_to_time(beats, sr=sr)
@@ -45,11 +45,7 @@ def find_best_chops(y, sr, bars=4, max_chops=6, mode="Phrase"):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
     rms = librosa.feature.rms(y=y)[0]
     times = librosa.times_like(rms, sr=sr)
-    
-    if mode == "Phrase":
-        duration = (bars * 4 * 60) / bpm
-    else:
-        duration = (bars * 60) / bpm
+    duration = (bars * 4 * 60) / bpm
     
     candidates = []
     for start in onsets:
@@ -60,12 +56,10 @@ def find_best_chops(y, sr, bars=4, max_chops=6, mode="Phrase"):
         if not np.any(mask):
             continue
         energy = float(np.mean(rms[mask]))
-        # Prefer onsets close to a beat
         bonus = 0.0
         if len(beat_times):
             dist = min(abs(start - bt) for bt in beat_times)
             bonus = max(0.0, 1.0 - dist * 4)
-        # Prefer mid-energy (not silent, not crushed)
         balance = 1.0 - abs(energy - 0.15) * 2
         score = energy * (1 + bonus) * max(0.3, balance)
         candidates.append((start, end, score))
@@ -92,7 +86,6 @@ if uploaded:
     duration = len(y_full) / sr
     st.write(f"Track length: {duration:.1f}s")
 
-    # Immediate best chops from full track
     if "auto_chops" not in st.session_state or st.session_state.get("last_file") != uploaded.name:
         with st.spinner("Finding the best chops..."):
             selected, bpm = find_best_chops(y_full, sr, bars=4, max_chops=6)
@@ -101,54 +94,65 @@ if uploaded:
             st.session_state.last_file = uploaded.name
             
             for i, (start, end, _) in enumerate(selected, 1):
-                seg = y_full[int(start*sr):int(end*sr)].copy()
-                seg = apply_fade(seg, 12, sr)
-                seg = norm(seg)
                 st.session_state.auto_chops.append({
                     "id": i,
+                    "orig_start": start,
+                    "orig_end": end,
                     "start": start,
                     "end": end,
-                    "audio": seg,
                     "pitch": 0,
                     "reverse": False,
                     "style": "Clean",
                     "locked": False
                 })
 
-    st.write(f"**{st.session_state.bpm:.1f} BPM** · Best chops from the full track")
+    st.write(f"**{st.session_state.bpm:.1f} BPM** · Adjust length on any chop")
 
     out_dir = tempfile.mkdtemp()
     all_files = []
 
     for chop in st.session_state.auto_chops:
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            st.markdown(f"**Chop {chop['id']}** · {chop['start']:.1f}s")
-        with col2:
-            chop["locked"] = st.checkbox("Lock", value=chop["locked"], key=f"lock_{chop['id']}")
+        st.markdown(f"**Chop {chop['id']}**")
 
-        # Controls
+        # Length control — extend or shorten from the end
+        max_extend = min(4.0, duration - chop["orig_end"])
+        max_shorten = max(0.3, chop["orig_end"] - chop["orig_start"] - 0.5)
+        length_adjust = st.slider(
+            "Length adjust (sec)",
+            -max_shorten, max_extend,
+            chop["end"] - chop["orig_end"],
+            0.1,
+            key=f"len_{chop['id']}",
+            help="Positive = extend, negative = shorten"
+        )
+        chop["end"] = chop["orig_end"] + length_adjust
+        chop["start"] = chop["orig_start"]  # keep start fixed for now
+
         c1, c2, c3 = st.columns(3)
         with c1:
             chop["pitch"] = st.slider("Pitch", -12, 12, chop["pitch"], key=f"pitch_{chop['id']}")
         with c2:
             chop["reverse"] = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
         with c3:
-            chop["style"] = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"], 
-                                         index=["Clean","Dusty","Warm","Dark"].index(chop["style"]), 
+            chop["style"] = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"],
+                                         index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
                                          key=f"style_{chop['id']}")
 
-        # Process
-        seg = chop["audio"].copy()
+        # Extract and process
+        start_sample = int(chop["start"] * sr)
+        end_sample = int(chop["end"] * sr)
+        end_sample = min(end_sample, len(y_full))
+        seg = y_full[start_sample:end_sample].copy()
+
         if chop["pitch"] != 0:
             seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
         if chop["reverse"]:
             seg = seg[::-1]
         seg = process(seg, chop["style"])
+        seg = apply_fade(seg, 12, sr)
         seg = norm(seg)
 
-        # Preview + download
-        name = f"chop_{chop['id']:02d}_{chop['start']:.1f}s"
+        name = f"chop_{chop['id']:02d}_{chop['start']:.1f}-{chop['end']:.1f}s"
         if chop["pitch"] != 0:
             name += f"_p{chop['pitch']:+d}"
         if chop["reverse"]:
@@ -164,23 +168,10 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-    # Pack
     if all_files:
         zpath = os.path.join(out_dir, "best_chops.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
             for fpath in all_files:
                 zf.write(fpath, Path(fpath).name)
         with open(zpath, "rb") as f:
-            st.download_button("Download All Best Chops", f, file_name="best_chops.zip", key="pack")
-
-    st.divider()
-    st.subheader("Want a different section?")
-    region_start = st.slider("Start (sec)", 0.0, max(0.1, duration-1), 0.0, 0.1)
-    region_end = st.slider("End (sec)", 1.0, duration, min(duration, 30.0), 0.1)
-    
-    if st.button("Chop this section instead"):
-        y_region = y_full[int(region_start*sr):int(region_end*sr)]
-        selected, bpm = find_best_chops(y_region, sr, bars=4, max_chops=4)
-        st.success(f"Found {len(selected)} chops in this section")
-        # (You can expand this later to replace or append)
-    
+            st.download_button("Download All", f, file_name="best_chops.zip", key="pack")
