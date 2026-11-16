@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops from the whole track — adjust length as needed")
+st.caption("Best chops · adjust start/end · one-shots · optional stems")
 
 def process(seg, style):
     if style == "Dusty":
@@ -60,8 +60,13 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
         if len(beat_times):
             dist = min(abs(start - bt) for bt in beat_times)
             bonus = max(0.0, 1.0 - dist * 4)
+        # Prefer chops that end near a downbeat (cleaner loops)
+        end_bonus = 0.0
+        if len(beat_times):
+            end_dist = min(abs(end - bt) for bt in beat_times)
+            end_bonus = max(0.0, 0.5 - end_dist * 2)
         balance = 1.0 - abs(energy - 0.15) * 2
-        score = energy * (1 + bonus) * max(0.3, balance)
+        score = energy * (1 + bonus) * max(0.3, balance) * (1 + end_bonus)
         candidates.append((start, end, score))
     
     candidates.sort(key=lambda x: x[2], reverse=True)
@@ -75,6 +80,23 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
     
     return selected, bpm
 
+def extract_oneshots(y, sr, max_shots=4):
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
+    rms = librosa.feature.rms(y=y)[0]
+    times = librosa.times_like(rms, sr=sr)
+    
+    shots = []
+    for onset in onsets[:30]:
+        window = y[int(onset*sr):int((onset+0.4)*sr)]
+        if len(window) < 100:
+            continue
+        energy = float(np.mean(np.abs(window)))
+        if energy > 0.08:
+            shots.append((onset, energy))
+    
+    shots.sort(key=lambda x: x[1], reverse=True)
+    return shots[:max_shots]
+
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
@@ -85,6 +107,9 @@ if uploaded:
     y_full, sr = librosa.load(path, sr=44100, mono=True)
     duration = len(y_full) / sr
     st.write(f"Track length: {duration:.1f}s")
+
+    # Optional stem separation note (Demucs is heavy for Cloud — placeholder for now)
+    st.caption("Stem separation coming soon — using full mix for now")
 
     if "auto_chops" not in st.session_state or st.session_state.get("last_file") != uploaded.name:
         with st.spinner("Finding the best chops..."):
@@ -102,11 +127,10 @@ if uploaded:
                     "end": end,
                     "pitch": 0,
                     "reverse": False,
-                    "style": "Clean",
-                    "locked": False
+                    "style": "Clean"
                 })
 
-    st.write(f"**{st.session_state.bpm:.1f} BPM** · Adjust length on any chop")
+    st.write(f"**{st.session_state.bpm:.1f} BPM** · Adjust start and length")
 
     out_dir = tempfile.mkdtemp()
     all_files = []
@@ -114,7 +138,17 @@ if uploaded:
     for chop in st.session_state.auto_chops:
         st.markdown(f"**Chop {chop['id']}**")
 
-        # Length control — extend or shorten from the end
+        # Start point adjustment
+        start_adjust = st.slider(
+            "Start adjust (sec)",
+            -1.0, 1.0,
+            chop["start"] - chop["orig_start"],
+            0.05,
+            key=f"start_{chop['id']}"
+        )
+        chop["start"] = max(0, chop["orig_start"] + start_adjust)
+
+        # Length adjust
         max_extend = min(4.0, duration - chop["orig_end"])
         max_shorten = max(0.3, chop["orig_end"] - chop["orig_start"] - 0.5)
         length_adjust = st.slider(
@@ -122,11 +156,9 @@ if uploaded:
             -max_shorten, max_extend,
             chop["end"] - chop["orig_end"],
             0.1,
-            key=f"len_{chop['id']}",
-            help="Positive = extend, negative = shorten"
+            key=f"len_{chop['id']}"
         )
         chop["end"] = chop["orig_end"] + length_adjust
-        chop["start"] = chop["orig_start"]  # keep start fixed for now
 
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -138,10 +170,8 @@ if uploaded:
                                          index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
                                          key=f"style_{chop['id']}")
 
-        # Extract and process
-        start_sample = int(chop["start"] * sr)
-        end_sample = int(chop["end"] * sr)
-        end_sample = min(end_sample, len(y_full))
+        start_sample = int(max(0, chop["start"]) * sr)
+        end_sample = int(min(chop["end"], duration) * sr)
         seg = y_full[start_sample:end_sample].copy()
 
         if chop["pitch"] != 0:
@@ -166,12 +196,29 @@ if uploaded:
         all_files.append(tmp_path)
         st.audio(tmp_path)
         with open(tmp_path, "rb") as f:
-            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
+            st.download_button("Download chop", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
+
+    # One-shots
+    st.divider()
+    st.subheader("One-shots")
+    oneshots = extract_oneshots(y_full, sr, max_shots=4)
+    for i, (onset, energy) in enumerate(oneshots, 1):
+        window = y_full[int(onset*sr):int((onset+0.6)*sr)]
+        window = apply_fade(window, 8, sr)
+        window = norm(window)
+        os_name = f"oneshot_{i:02d}_{onset:.1f}s.wav"
+        os_path = os.path.join(out_dir, os_name)
+        sf.write(os_path, window, sr)
+        all_files.append(os_path)
+        st.markdown(f"**One-shot {i}** · {onset:.1f}s")
+        st.audio(os_path)
+        with open(os_path, "rb") as f:
+            st.download_button("Download oneshot", f, file_name=os_name, mime="audio/wav", key=f"os_{i}")
 
     if all_files:
-        zpath = os.path.join(out_dir, "best_chops.zip")
+        zpath = os.path.join(out_dir, "sample_pack.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
             for fpath in all_files:
                 zf.write(fpath, Path(fpath).name)
         with open(zpath, "rb") as f:
-            st.download_button("Download All", f, file_name="best_chops.zip", key="pack")
+            st.download_button("Download Full Pack", f, file_name="sample_pack.zip", key="pack")
