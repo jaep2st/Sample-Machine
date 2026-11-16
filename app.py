@@ -193,11 +193,19 @@ if session_upload:
         st.error("Could not load session")
 
 if uploaded:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+    suffix = Path(uploaded.name).suffix.lower()
+    if suffix not in [".mp3", ".wav", ".m4a", ".flac"]:
+        suffix = ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded.getvalue())
         path = tmp.name
 
-    y_full, sr = librosa.load(path, sr=44100, mono=True)
+    try:
+        y_full, sr = librosa.load(path, sr=44100, mono=True)
+    except Exception as e:
+        st.error(f"Could not load audio: {e}")
+        st.stop()
+
     duration = len(y_full) / sr
     key = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
@@ -261,7 +269,6 @@ if uploaded:
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
-    # Audition and favorites
     col_aud, col_fav = st.columns(2)
     with col_aud:
         if st.button("Audition all"):
@@ -294,7 +301,6 @@ if uploaded:
                     chop["fade_out"] = max(chop["fade_out"], 8)
             st.rerun()
 
-    # Duplicate and pitch
     if st.button("Duplicate last + pitch variants"):
         if st.session_state.auto_chops:
             base = st.session_state.auto_chops[-1].copy()
@@ -307,7 +313,6 @@ if uploaded:
                 st.session_state.auto_chops.append(new)
             st.rerun()
 
-    # Presets
     if "presets" not in st.session_state:
         st.session_state.presets = {}
     preset_name = st.text_input("Preset name")
@@ -433,7 +438,6 @@ if uploaded:
                 st.rerun()
 
             if not chop["locked"]:
-                # Length presets
                 st.markdown("**Length**")
                 l1, l2, l3 = st.columns(3)
                 if l1.button("1 bar", key=f"bar1_{chop['id']}"):
@@ -443,7 +447,6 @@ if uploaded:
                 if l3.button("4 bar", key=f"bar4_{chop['id']}"):
                     set_chop_bars(chop, 4, bpm, duration)
 
-                # Nudge
                 st.markdown("**Nudge**")
                 n1, n2, n3, n4 = st.columns(4)
                 if n1.button("Start -50ms", key=f"ns-{chop['id']}"):
@@ -519,7 +522,6 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
-    # Favorites pack
     if fav_files:
         zpath = os.path.join(out_dir, "favorites.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
@@ -528,7 +530,6 @@ if uploaded:
         with open(zpath, "rb") as f:
             st.download_button("Download Favorites Pack", f, file_name="favorites.zip", key="favpack")
 
-    # Session note
     if favorites or loop_points:
         note = f"BPM: {bpm:.1f}\nKey: {key}\n\nFavorites:\n" + ("\n".join(favorites) if favorites else "None")
         note += "\n\nLoop Points:\n" + "\n".join(loop_points)
@@ -538,7 +539,6 @@ if uploaded:
         with open(note_path, "rb") as f:
             st.download_button("Download Session Note", f, file_name="session_note.txt", key="note")
 
-    # Sample map
     if sample_map:
         map_text = "Chop,Start(sec),Length(sec),Filename\n" + "\n".join(sample_map)
         map_path = os.path.join(out_dir, "sample_map.csv")
@@ -547,7 +547,6 @@ if uploaded:
         with open(map_path, "rb") as f:
             st.download_button("Download Sample Map", f, file_name="sample_map.csv", key="map")
 
-    # Session export
     if st.button("Export session"):
         session_data = {"bpm": bpm, "key": key, "chops": st.session_state.auto_chops}
         session_path = os.path.join(out_dir, "session.json")
@@ -556,7 +555,6 @@ if uploaded:
         with open(session_path, "rb") as f:
             st.download_button("Download Session", f, file_name="session.json", key="session")
 
-    # Loop points
     if loop_points:
         points_text = "\n".join(loop_points)
         points_path = os.path.join(out_dir, "loop_points.txt")
@@ -565,7 +563,6 @@ if uploaded:
         with open(points_path, "rb") as f:
             st.download_button("Download Loop Points", f, file_name="loop_points.txt", key="points")
 
-    # One-shots
     st.divider()
     st.subheader("One-shots")
     max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
