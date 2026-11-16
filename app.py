@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · scores · crossfade · session memory")
+st.caption("Best chops · scores · crossfade · volume · one-shots")
 
 def process(seg, style):
     if style == "Dusty":
@@ -50,9 +50,11 @@ def apply_crossfade_loop(seg, sr, crossfade_ms=30):
         looped.append(chunk)
     return np.concatenate(looped)
 
-def norm(seg):
+def norm(seg, gain=1.0):
     peak = np.max(np.abs(seg))
-    return seg / peak * 0.95 if peak > 0 else seg
+    if peak > 0:
+        seg = seg / peak * 0.95 * gain
+    return np.clip(seg, -1.0, 1.0)
 
 def detect_key(y, sr):
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
@@ -104,13 +106,16 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
 def extract_oneshots(y, sr, max_shots=4):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
     shots = []
-    for onset in onsets[:40]:
-        window = y[int(onset*sr):int((onset+0.35)*sr)]
-        if len(window) < 100:
+    for onset in onsets[:50]:
+        window = y[int(onset*sr):int((onset+0.3)*sr)]
+        if len(window) < 80:
             continue
         energy = float(np.mean(np.abs(window)))
-        if energy > 0.09:
-            shots.append((onset, energy))
+        # Prefer sharp transients
+        if energy > 0.1:
+            peak = float(np.max(np.abs(window)))
+            if peak > 0.25:
+                shots.append((onset, energy * peak))
     shots.sort(key=lambda x: x[1], reverse=True)
     return shots[:max_shots]
 
@@ -161,7 +166,8 @@ if uploaded:
                     "reverse": False,
                     "style": "Clean",
                     "filter": "None",
-                    "crossfade": 30
+                    "crossfade": 30,
+                    "volume": 1.0
                 })
 
     bpm = st.session_state.bpm
@@ -191,9 +197,13 @@ if uploaded:
                                          index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
                                          key=f"style_{chop['id']}")
 
-        chop["filter"] = st.selectbox("Filter", ["None", "Low-pass", "High-pass"],
-                                      index=["None","Low-pass","High-pass"].index(chop["filter"]),
-                                      key=f"filter_{chop['id']}")
+        c4, c5 = st.columns(2)
+        with c4:
+            chop["filter"] = st.selectbox("Filter", ["None", "Low-pass", "High-pass"],
+                                          index=["None","Low-pass","High-pass"].index(chop["filter"]),
+                                          key=f"filter_{chop['id']}")
+        with c5:
+            chop["volume"] = st.slider("Volume", 0.5, 1.5, chop["volume"], 0.05, key=f"vol_{chop['id']}")
 
         chop["crossfade"] = st.slider("Loop crossfade (ms)", 0, 100, chop["crossfade"], 5, key=f"cf_{chop['id']}")
 
@@ -211,7 +221,7 @@ if uploaded:
         elif chop["filter"] == "High-pass":
             seg = librosa.effects.preemphasis(seg, coef=0.97)
         seg = apply_fade(seg, 12, sr)
-        seg = norm(seg)
+        seg = norm(seg, chop["volume"])
 
         name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
         if chop["pitch"] != 0:
@@ -233,7 +243,6 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        # Crossfaded loop preview
         looped = apply_crossfade_loop(seg, sr, chop["crossfade"])
         loop_name = name.replace(".wav", "_loop.wav")
         loop_path = os.path.join(out_dir, loop_name)
@@ -246,8 +255,8 @@ if uploaded:
     st.subheader("One-shots")
     oneshots = extract_oneshots(y_full, sr, max_shots=4)
     for i, (onset, energy) in enumerate(oneshots, 1):
-        window = y_full[int(onset*sr):int((onset+0.5)*sr)]
-        window = apply_fade(window, 6, sr)
+        window = y_full[int(onset*sr):int((onset+0.45)*sr)]
+        window = apply_fade(window, 5, sr)
         window = norm(window)
         os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
         os_path = os.path.join(out_dir, os_name)
