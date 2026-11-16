@@ -140,4 +140,37 @@ if uploaded:
         seg = y_full[start_sample:end_sample].copy()
 
         if chop["pitch"] != 0:
-            seg =
+            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
+        if chop["reverse"]:
+            seg = seg[::-1]
+        seg = process(seg, chop["style"])
+        seg = apply_fade(seg, 12, sr)
+        seg = norm(seg)
+
+        # Single version
+        name = f"chop_{chop['id']:02d}_{chop['start']:.1f}-{chop['end']:.1f}s.wav"
+        tmp_path = os.path.join(out_dir, name)
+        sf.write(tmp_path, seg, sr)
+        all_files.append(tmp_path)
+
+        st.markdown("**Single**")
+        st.audio(tmp_path)
+        with open(tmp_path, "rb") as f:
+            st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
+
+        # Loop version (4 repeats)
+        looped = np.concatenate([seg] * 4)
+        loop_name = f"loop_{chop['id']:02d}.wav"
+        loop_path = os.path.join(out_dir, loop_name)
+        sf.write(loop_path, looped, sr)
+
+        st.markdown("**Loop (4x)**")
+        st.audio(loop_path)
+
+    if all_files:
+        zpath = os.path.join(out_dir, "sample_pack.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in all_files:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as f:
+            st.download_button("Download All Singles", f, file_name="sample_pack.zip", key="pack")
