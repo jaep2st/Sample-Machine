@@ -106,4 +106,39 @@ if uploaded:
                 seg = process(seg, style)
                 seg = norm(seg)
                 abs_start = region_start + start
-                base =
+                base = f"{int(bpm)}bpm_{key}_{style.lower()}_{i:02d}_{abs_start:.1f}s"
+
+                p = os.path.join(out, base + "_loop.wav")
+                sf.write(p, seg, sr)
+                files.append(p)
+
+                env = np.abs(seg)
+                if len(env) > 10:
+                    peak_idx = np.argmax(env[:int(sr*0.4)])
+                    oneshot = seg[max(0, peak_idx-int(sr*0.015)):peak_idx+int(sr*1.5)]
+                    oneshot = norm(oneshot)
+                    p = os.path.join(out, base + "_oneshot.wav")
+                    sf.write(p, oneshot, sr)
+                    files.append(p)
+
+                if pitch != 0:
+                    pitched = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+                    pitched = norm(pitched)
+                    p = os.path.join(out, base + f"_p{pitch}.wav")
+                    sf.write(p, pitched, sr)
+                    files.append(p)
+
+        st.success(f"{len(selected)} chops")
+
+        for fpath in files:
+            name = Path(fpath).name
+            st.audio(fpath)
+            with open(fpath, "rb") as fh:
+                st.download_button("Save", fh, file_name=name, mime="audio/wav", key=name)
+
+        zpath = os.path.join(out, "pack.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in files:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as fh:
+            st.download_button("Download Pack", fh, file_name="sample_pack.zip")
