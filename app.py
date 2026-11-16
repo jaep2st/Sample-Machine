@@ -25,6 +25,7 @@ if uploaded:
 
     style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"])
     max_chops = st.slider("How many", 3, 10, 5)
+    nudge = st.slider("Start nudge (ms)", -200, 200, 0)
 
     with st.spinner("Finding phrases..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -44,9 +45,11 @@ if uploaded:
         rms = librosa.feature.rms(y=y)[0]
         times = librosa.times_like(rms, sr=sr)
         bar_dur = (bars * 4 * 60) / bpm
+        nudge_sec = nudge / 1000.0
 
         cands = []
         for start in onsets:
+            start = max(0, start + nudge_sec)
             end = start + bar_dur
             if end > len(y)/sr - 0.05:
                 continue
@@ -54,7 +57,6 @@ if uploaded:
             if not np.any(mask):
                 continue
             energy = float(np.mean(rms[mask]))
-            # Prefer starts near beats
             if len(beat_times):
                 dist = min(abs(start - bt) for bt in beat_times)
                 bonus = max(0, 1 - dist * 5)
@@ -72,6 +74,7 @@ if uploaded:
 
         out = tempfile.mkdtemp()
         files = []
+        info_lines = [f"BPM: {bpm:.1f}", f"Key: {key}", f"Style: {style}", f"Mode: {mode}", ""]
 
         def process(seg, style):
             if style == "Dusty":
@@ -89,14 +92,17 @@ if uploaded:
             seg = y[int(start*sr):int(end*sr)].copy()
             seg = process(seg, style)
             base = f"{int(bpm)}bpm_{key}_{style.lower()}_{mode.lower()}_{i:02d}"
+            info_lines.append(f"{base}: {start:.2f}s - {end:.2f}s")
 
             if mode in ("Loop", "Both"):
                 p = os.path.join(out, base + "_loop.wav")
                 sf.write(p, seg, sr)
                 files.append(p)
             if mode in ("One-shot", "Both"):
-                # Shorter one-shot from the start of the phrase
-                oneshot = seg[:int(sr * min(2.5, len(seg)/sr))]
+                # True one-shot: first strong transient region
+                env = np.abs(seg)
+                peak = np.argmax(env[:int(sr*0.5)])
+                oneshot = seg[max(0, peak-int(sr*0.02)):peak+int(sr*1.8)]
                 p = os.path.join(out, base + "_oneshot.wav")
                 sf.write(p, oneshot, sr)
                 files.append(p)
@@ -106,9 +112,16 @@ if uploaded:
                 sf.write(p, pitched, sr)
                 files.append(p)
 
+        info_path = os.path.join(out, "pack_info.txt")
+        with open(info_path, "w") as f:
+            f.write("\n".join(info_lines))
+        files.append(info_path)
+
     st.success(f"{len(selected)} chops")
 
     for fpath in files:
+        if fpath.endswith(".txt"):
+            continue
         name = Path(fpath).name
         st.audio(fpath)
         with open(fpath, "rb") as fh:
