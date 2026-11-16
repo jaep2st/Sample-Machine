@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · adjust start/end · one-shots · optional stems")
+st.caption("Best chops · adjust start/end · hear the loop · one-shots")
 
 def process(seg, style):
     if style == "Dusty":
@@ -60,7 +60,6 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
         if len(beat_times):
             dist = min(abs(start - bt) for bt in beat_times)
             bonus = max(0.0, 1.0 - dist * 4)
-        # Prefer chops that end near a downbeat (cleaner loops)
         end_bonus = 0.0
         if len(beat_times):
             end_dist = min(abs(end - bt) for bt in beat_times)
@@ -82,9 +81,6 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
 
 def extract_oneshots(y, sr, max_shots=4):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
-    rms = librosa.feature.rms(y=y)[0]
-    times = librosa.times_like(rms, sr=sr)
-    
     shots = []
     for onset in onsets[:30]:
         window = y[int(onset*sr):int((onset+0.4)*sr)]
@@ -93,7 +89,6 @@ def extract_oneshots(y, sr, max_shots=4):
         energy = float(np.mean(np.abs(window)))
         if energy > 0.08:
             shots.append((onset, energy))
-    
     shots.sort(key=lambda x: x[1], reverse=True)
     return shots[:max_shots]
 
@@ -108,117 +103,4 @@ if uploaded:
     duration = len(y_full) / sr
     st.write(f"Track length: {duration:.1f}s")
 
-    # Optional stem separation note (Demucs is heavy for Cloud — placeholder for now)
-    st.caption("Stem separation coming soon — using full mix for now")
-
-    if "auto_chops" not in st.session_state or st.session_state.get("last_file") != uploaded.name:
-        with st.spinner("Finding the best chops..."):
-            selected, bpm = find_best_chops(y_full, sr, bars=4, max_chops=6)
-            st.session_state.auto_chops = []
-            st.session_state.bpm = bpm
-            st.session_state.last_file = uploaded.name
-            
-            for i, (start, end, _) in enumerate(selected, 1):
-                st.session_state.auto_chops.append({
-                    "id": i,
-                    "orig_start": start,
-                    "orig_end": end,
-                    "start": start,
-                    "end": end,
-                    "pitch": 0,
-                    "reverse": False,
-                    "style": "Clean"
-                })
-
-    st.write(f"**{st.session_state.bpm:.1f} BPM** · Adjust start and length")
-
-    out_dir = tempfile.mkdtemp()
-    all_files = []
-
-    for chop in st.session_state.auto_chops:
-        st.markdown(f"**Chop {chop['id']}**")
-
-        # Start point adjustment
-        start_adjust = st.slider(
-            "Start adjust (sec)",
-            -1.0, 1.0,
-            chop["start"] - chop["orig_start"],
-            0.05,
-            key=f"start_{chop['id']}"
-        )
-        chop["start"] = max(0, chop["orig_start"] + start_adjust)
-
-        # Length adjust
-        max_extend = min(4.0, duration - chop["orig_end"])
-        max_shorten = max(0.3, chop["orig_end"] - chop["orig_start"] - 0.5)
-        length_adjust = st.slider(
-            "Length adjust (sec)",
-            -max_shorten, max_extend,
-            chop["end"] - chop["orig_end"],
-            0.1,
-            key=f"len_{chop['id']}"
-        )
-        chop["end"] = chop["orig_end"] + length_adjust
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            chop["pitch"] = st.slider("Pitch", -12, 12, chop["pitch"], key=f"pitch_{chop['id']}")
-        with c2:
-            chop["reverse"] = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
-        with c3:
-            chop["style"] = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"],
-                                         index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
-                                         key=f"style_{chop['id']}")
-
-        start_sample = int(max(0, chop["start"]) * sr)
-        end_sample = int(min(chop["end"], duration) * sr)
-        seg = y_full[start_sample:end_sample].copy()
-
-        if chop["pitch"] != 0:
-            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
-        if chop["reverse"]:
-            seg = seg[::-1]
-        seg = process(seg, chop["style"])
-        seg = apply_fade(seg, 12, sr)
-        seg = norm(seg)
-
-        name = f"chop_{chop['id']:02d}_{chop['start']:.1f}-{chop['end']:.1f}s"
-        if chop["pitch"] != 0:
-            name += f"_p{chop['pitch']:+d}"
-        if chop["reverse"]:
-            name += "_rev"
-        if chop["style"] != "Clean":
-            name += f"_{chop['style'].lower()}"
-        name += ".wav"
-
-        tmp_path = os.path.join(out_dir, name)
-        sf.write(tmp_path, seg, sr)
-        all_files.append(tmp_path)
-        st.audio(tmp_path)
-        with open(tmp_path, "rb") as f:
-            st.download_button("Download chop", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
-
-    # One-shots
-    st.divider()
-    st.subheader("One-shots")
-    oneshots = extract_oneshots(y_full, sr, max_shots=4)
-    for i, (onset, energy) in enumerate(oneshots, 1):
-        window = y_full[int(onset*sr):int((onset+0.6)*sr)]
-        window = apply_fade(window, 8, sr)
-        window = norm(window)
-        os_name = f"oneshot_{i:02d}_{onset:.1f}s.wav"
-        os_path = os.path.join(out_dir, os_name)
-        sf.write(os_path, window, sr)
-        all_files.append(os_path)
-        st.markdown(f"**One-shot {i}** · {onset:.1f}s")
-        st.audio(os_path)
-        with open(os_path, "rb") as f:
-            st.download_button("Download oneshot", f, file_name=os_name, mime="audio/wav", key=f"os_{i}")
-
-    if all_files:
-        zpath = os.path.join(out_dir, "sample_pack.zip")
-        with zipfile.ZipFile(zpath, "w") as zf:
-            for fpath in all_files:
-                zf.write(fpath, Path(fpath).name)
-        with open(zpath, "rb") as f:
-            st.download_button("Download Full Pack", f, file_name="sample_pack.zip", key="pack")
+    if "auto_chops" not in st.session_state or
