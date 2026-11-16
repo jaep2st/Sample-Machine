@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · more one-shots · A/B · BPM lock")
+st.caption("Best chops · cleaner loop alignment")
 
 def process(seg, style):
     if style == "Dusty":
@@ -141,7 +141,6 @@ if uploaded:
     key = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
 
-    # BPM lock
     lock_bpm = st.checkbox("Lock chops to target BPM", value=False)
     target_bpm = st.number_input("Target BPM", 60, 200, 90) if lock_bpm else None
 
@@ -182,9 +181,9 @@ if uploaded:
                     "style": "Clean",
                     "eq": "None",
                     "eq_amount": 0.5,
-                    "fade_in": 12,
-                    "fade_out": 12,
-                    "crossfade": 30,
+                    "fade_in": 8,
+                    "fade_out": 8,
+                    "crossfade": 20,
                     "volume": 1.0,
                     "include": True
                 })
@@ -198,16 +197,21 @@ if uploaded:
 
     for chop in st.session_state.auto_chops:
         st.markdown(f"### Chop {chop['id']} · Score: {chop['score']:.2f}")
+        st.caption(f"Original: {chop['orig_start']:.2f}s – {chop['orig_end']:.2f}s")
 
         chop["include"] = st.checkbox("Include in pack", value=chop["include"], key=f"inc_{chop['id']}")
 
-        start_adjust = st.slider("Start adjust (sec)", -1.0, 1.0, chop["start"] - chop["orig_start"], 0.05, key=f"start_{chop['id']}")
-        chop["start"] = max(0, chop["orig_start"] + start_adjust)
+        # Cleaner trim controls
+        col_start, col_end = st.columns(2)
+        with col_start:
+            start_trim = st.slider("Trim start (sec)", -0.5, 0.5, chop["start"] - chop["orig_start"], 0.01, key=f"st_{chop['id']}")
+        with col_end:
+            end_trim = st.slider("Trim end (sec)", -0.5, 0.5, chop["end"] - chop["orig_end"], 0.01, key=f"et_{chop['id']}")
 
-        max_extend = min(4.0, duration - chop["orig_end"])
-        max_shorten = max(0.3, chop["orig_end"] - chop["orig_start"] - 0.5)
-        length_adjust = st.slider("Length adjust (sec)", -max_shorten, max_extend, chop["end"] - chop["orig_end"], 0.1, key=f"len_{chop['id']}")
-        chop["end"] = chop["orig_end"] + length_adjust
+        chop["start"] = max(0, chop["orig_start"] + start_trim)
+        chop["end"] = min(duration, chop["orig_end"] + end_trim)
+        if chop["end"] <= chop["start"] + 0.2:
+            chop["end"] = chop["start"] + 0.2
 
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -230,12 +234,12 @@ if uploaded:
 
         c6, c7 = st.columns(2)
         with c6:
-            chop["fade_in"] = st.slider("Fade in (ms)", 0, 100, chop["fade_in"], 2, key=f"fi_{chop['id']}")
+            chop["fade_in"] = st.slider("Fade in (ms)", 0, 80, chop["fade_in"], 2, key=f"fi_{chop['id']}")
         with c7:
-            chop["fade_out"] = st.slider("Fade out (ms)", 0, 100, chop["fade_out"], 2, key=f"fo_{chop['id']}")
+            chop["fade_out"] = st.slider("Fade out (ms)", 0, 80, chop["fade_out"], 2, key=f"fo_{chop['id']}")
 
         chop["volume"] = st.slider("Volume", 0.5, 1.5, chop["volume"], 0.05, key=f"vol_{chop['id']}")
-        chop["crossfade"] = st.slider("Loop crossfade (ms)", 0, 100, chop["crossfade"], 5, key=f"cf_{chop['id']}")
+        chop["crossfade"] = st.slider("Loop crossfade (ms)", 0, 80, chop["crossfade"], 2, key=f"cf_{chop['id']}")
 
         start_sample = int(max(0, chop["start"]) * sr)
         end_sample = int(min(chop["end"], duration) * sr)
@@ -271,7 +275,6 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        # Loop respects reverse
         loop_seg = seg[::-1] if chop["reverse"] else seg
         looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
         loop_name = name.replace(".wav", "_loop.wav")
@@ -282,7 +285,7 @@ if uploaded:
         st.markdown(f"**Loop (4x, {chop['crossfade']}ms crossfade)**")
         st.audio(loop_path)
 
-    # A/B comparison
+    # A/B
     st.divider()
     st.subheader("Compare chops")
     if len(st.session_state.auto_chops) >= 2:
@@ -290,8 +293,7 @@ if uploaded:
         a = st.selectbox("Chop A", ids, key="cmp_a")
         b = st.selectbox("Chop B", ids, index=min(1, len(ids)-1), key="cmp_b")
         if st.button("Play A then B"):
-            # Simple sequential playback note
-            st.success(f"Playing Chop {a} then Chop {b} — scroll up to hear them")
+            st.success(f"Playing Chop {a} then Chop {b}")
 
     # One-shots
     st.divider()
@@ -314,7 +316,6 @@ if uploaded:
         with open(os_path, "rb") as f:
             st.download_button("Download oneshot", f, file_name=os_name, mime="audio/wav", key=f"os_{i}")
 
-    # Pack
     pack_files = included_files + oneshot_files
     if pack_files:
         zpath = os.path.join(out_dir, "sample_pack.zip")
