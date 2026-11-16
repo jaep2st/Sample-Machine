@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · solo · clean loop · MIDI map")
+st.caption("Best chops · mute · make all loops · sample map")
 
 def process(seg, style):
     if style == "Dusty":
@@ -57,7 +57,7 @@ def apply_fade(seg, fade_in_ms, fade_out_ms, sr):
             seg[-fo:] *= np.linspace(1, 0, fo)
     return seg
 
-def apply_crossfade_loop(seg, sr, crossfade_ms=15):
+def apply_crossfade_loop(seg, sr, crossfade_ms=12):
     if crossfade_ms <= 0 or len(seg) < sr * 0.15:
         return np.concatenate([seg] * 4)
     cf = int(crossfade_ms / 1000 * sr)
@@ -77,7 +77,6 @@ def apply_crossfade_loop(seg, sr, crossfade_ms=15):
 def apply_swing(seg, sr, swing_amount):
     if swing_amount <= 0.05:
         return seg
-    # More musical swing: delay the backbeat portion
     third = len(seg) // 3
     delay = int(swing_amount * 0.035 * sr)
     if delay > 0 and third > delay:
@@ -232,20 +231,34 @@ if uploaded:
                     "humanize": False,
                     "locked": False,
                     "swing": 0.0,
-                    "solo": False
+                    "solo": False,
+                    "mute": False
                 })
 
     bpm = st.session_state.bpm
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
-    if st.button("Duplicate last chop"):
-        if st.session_state.auto_chops:
-            last = st.session_state.auto_chops[-1].copy()
-            last["id"] = max(c["id"] for c in st.session_state.auto_chops) + 1
-            last["locked"] = False
-            last["solo"] = False
-            st.session_state.auto_chops.append(last)
+    col_dup, col_all = st.columns(2)
+    with col_dup:
+        if st.button("Duplicate last chop"):
+            if st.session_state.auto_chops:
+                last = st.session_state.auto_chops[-1].copy()
+                last["id"] = max(c["id"] for c in st.session_state.auto_chops) + 1
+                last["locked"] = False
+                last["solo"] = False
+                last["mute"] = False
+                st.session_state.auto_chops.append(last)
+                st.rerun()
+    with col_all:
+        if st.button("Make all loops"):
+            for chop in st.session_state.auto_chops:
+                if not chop["locked"]:
+                    chop["start"] = snap_to_nearest_beat(chop["start"], beat_times)
+                    chop["end"] = snap_to_nearest_beat(chop["end"], beat_times)
+                    chop["crossfade"] = max(chop["crossfade"], 18)
+                    chop["fade_in"] = max(chop["fade_in"], 8)
+                    chop["fade_out"] = max(chop["fade_out"], 8)
             st.rerun()
 
     # Presets
@@ -280,17 +293,19 @@ if uploaded:
     included_files = []
     oneshot_files = []
     loop_points = []
-    midi_notes = []
+    sample_map = []
 
     for chop in st.session_state.auto_chops:
         with st.expander(f"Chop {chop['id']} · Score: {chop['score']:.2f}", expanded=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
                 chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
-            with col2:
+            with c2:
                 chop["locked"] = st.checkbox("Lock", value=chop["locked"], key=f"lock_{chop['id']}")
-            with col3:
+            with c3:
                 chop["solo"] = st.checkbox("Solo", value=chop["solo"], key=f"solo_{chop['id']}")
+            with c4:
+                chop["mute"] = st.checkbox("Mute", value=chop["mute"], key=f"mute_{chop['id']}")
 
             if not chop["locked"]:
                 preview_start = max(0, chop["start"] - 0.5)
@@ -355,6 +370,10 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
+            if chop["mute"]:
+                st.info("Muted")
+                continue
+
             start_use = chop["start"]
             if chop["humanize"] and not chop["locked"]:
                 start_use += np.random.uniform(-0.02, 0.02)
@@ -367,7 +386,7 @@ if uploaded:
             if chop["pitch"] != 0:
                 seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
             if chop["reverse"]:
-                seg = seg[::-1]
+                seg = np.flip(seg).copy()
             seg = process(seg, chop["style"])
             seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
             seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
@@ -387,34 +406,35 @@ if uploaded:
 
             tmp_path = os.path.join(out_dir, name)
             sf.write(tmp_path, seg, sr)
-            if chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]):
+            should_include = chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"])
+            if should_include:
                 included_files.append(tmp_path)
                 loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
-                midi_notes.append(f"{chop['id']}, {start_use:.3f}, {chop['end']-start_use:.3f}")
+                sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
 
             st.markdown("**Single**")
             st.audio(tmp_path)
             with open(tmp_path, "rb") as f:
                 st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-            loop_seg = seg[::-1] if chop["reverse"] else seg
+            loop_seg = np.flip(seg).copy() if chop["reverse"] else seg
             looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
             loop_name = name.replace(".wav", "_loop.wav")
             loop_path = os.path.join(out_dir, loop_name)
             sf.write(loop_path, looped, sr)
-            if chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]):
+            if should_include:
                 included_files.append(loop_path)
             st.markdown("**Loop (4x)**")
             st.audio(loop_path)
 
-    # MIDI map
-    if midi_notes:
-        midi_text = "Chop,Start(sec),Length(sec)\n" + "\n".join(midi_notes)
-        midi_path = os.path.join(out_dir, "midi_map.csv")
-        with open(midi_path, "w") as f:
-            f.write(midi_text)
-        with open(midi_path, "rb") as f:
-            st.download_button("Download MIDI Map", f, file_name="midi_map.csv", key="midi")
+    # Sample map
+    if sample_map:
+        map_text = "Chop,Start(sec),Length(sec),Filename\n" + "\n".join(sample_map)
+        map_path = os.path.join(out_dir, "sample_map.csv")
+        with open(map_path, "w") as f:
+            f.write(map_text)
+        with open(map_path, "rb") as f:
+            st.download_button("Download Sample Map", f, file_name="sample_map.csv", key="map")
 
     # Session export
     if st.button("Export session"):
@@ -434,22 +454,27 @@ if uploaded:
         with open(points_path, "rb") as f:
             st.download_button("Download Loop Points", f, file_name="loop_points.txt", key="points")
 
-    # One-shots
+    # One-shots with pitch
     st.divider()
     st.subheader("One-shots")
     max_oneshots = st.slider("One-shots to extract", 4, 16, 8)
     oneshot_len = st.slider("One-shot length (sec)", 0.3, 1.2, 0.5, 0.05)
+    oneshot_pitch = st.slider("One-shot pitch", -12, 12, 0)
     reverse_oneshots = st.checkbox("Reverse one-shots", value=False)
     oneshots = extract_oneshots(y_full, sr, max_shots=max_oneshots)
     include_oneshots = st.checkbox("Include one-shots in pack", value=True)
 
     for i, (onset, energy) in enumerate(oneshots, 1):
-        window = y_full[int(onset*sr):int((onset + oneshot_len)*sr)]
+        window = y_full[int(onset*sr):int((onset + oneshot_len)*sr)].copy()
+        if oneshot_pitch != 0:
+            window = librosa.effects.pitch_shift(window, sr=sr, n_steps=oneshot_pitch)
         if reverse_oneshots:
-            window = window[::-1]
+            window = np.flip(window).copy()
         window = apply_fade(window, 4, 4, sr)
         window = norm(window)
         os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s"
+        if oneshot_pitch != 0:
+            os_name += f"_p{oneshot_pitch:+d}"
         if reverse_oneshots:
             os_name += "_rev"
         os_name += ".wav"
