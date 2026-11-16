@@ -10,22 +10,21 @@ import soundfile as sf
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 
 st.title("Sample Machine")
-st.caption("Phrase-aware chops")
+st.caption("For producers who actually flip samples")
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
     c1, c2, c3 = st.columns(3)
     with c1:
-        bars = st.slider("Bars", 1, 16, 4)
+        bars = st.slider("Bars", 1, 8, 4)
     with c2:
         pitch = st.slider("Pitch", -12, 12, 0)
     with c3:
-        mode = st.selectbox("Mode", ["Loop", "One-shot", "Both"])
+        style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"])
 
-    style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"])
-    max_chops = st.slider("How many", 3, 10, 5)
-    nudge = st.slider("Start nudge (ms)", -200, 200, 0)
+    max_chops = st.slider("Chops", 3, 8, 4)
+    normalize = st.checkbox("Normalize for sampler", value=True)
 
     with st.spinner("Finding phrases..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -45,11 +44,9 @@ if uploaded:
         rms = librosa.feature.rms(y=y)[0]
         times = librosa.times_like(rms, sr=sr)
         bar_dur = (bars * 4 * 60) / bpm
-        nudge_sec = nudge / 1000.0
 
         cands = []
         for start in onsets:
-            start = max(0, start + nudge_sec)
             end = start + bar_dur
             if end > len(y)/sr - 0.05:
                 continue
@@ -74,62 +71,66 @@ if uploaded:
 
         out = tempfile.mkdtemp()
         files = []
-        info_lines = [f"BPM: {bpm:.1f}", f"Key: {key}", f"Style: {style}", f"Mode: {mode}", ""]
 
         def process(seg, style):
             if style == "Dusty":
-                seg = np.convolve(seg, np.ones(19)/19, mode="same")
-                seg = np.tanh(seg * 1.3) * 0.87
+                seg = np.convolve(seg, np.ones(17)/17, mode="same")
+                seg = np.tanh(seg * 1.25) * 0.88
             elif style == "Warm":
-                seg = np.convolve(seg, np.ones(9)/9, mode="same")
-                seg = np.tanh(seg * 1.12) * 0.93
+                seg = np.convolve(seg, np.ones(7)/7, mode="same")
+                seg = np.tanh(seg * 1.1) * 0.94
             elif style == "Dark":
-                seg = np.convolve(seg, np.ones(35)/35, mode="same")
-                seg *= 0.68
+                seg = np.convolve(seg, np.ones(31)/31, mode="same")
+                seg *= 0.7
+            return seg
+
+        def norm(seg):
+            if not normalize:
+                return seg
+            peak = np.max(np.abs(seg))
+            if peak > 0:
+                return seg / peak * 0.95
             return seg
 
         for i, (start, end, _) in enumerate(selected, 1):
             seg = y[int(start*sr):int(end*sr)].copy()
             seg = process(seg, style)
-            base = f"{int(bpm)}bpm_{key}_{style.lower()}_{mode.lower()}_{i:02d}"
-            info_lines.append(f"{base}: {start:.2f}s - {end:.2f}s")
+            seg = norm(seg)
+            base = f"{int(bpm)}bpm_{key}_{style.lower()}_{i:02d}"
 
-            if mode in ("Loop", "Both"):
-                p = os.path.join(out, base + "_loop.wav")
-                sf.write(p, seg, sr)
-                files.append(p)
-            if mode in ("One-shot", "Both"):
-                # True one-shot: first strong transient region
-                env = np.abs(seg)
-                peak = np.argmax(env[:int(sr*0.5)])
-                oneshot = seg[max(0, peak-int(sr*0.02)):peak+int(sr*1.8)]
-                p = os.path.join(out, base + "_oneshot.wav")
-                sf.write(p, oneshot, sr)
-                files.append(p)
-            if pitch != 0 and mode != "One-shot":
+            # Loop
+            p = os.path.join(out, base + "_loop.wav")
+            sf.write(p, seg, sr)
+            files.append(p)
+
+            # One-shot from first transient
+            env = np.abs(seg)
+            peak_idx = np.argmax(env[:int(sr*0.4)])
+            oneshot = seg[max(0, peak_idx-int(sr*0.015)):peak_idx+int(sr*1.5)]
+            oneshot = norm(oneshot)
+            p = os.path.join(out, base + "_oneshot.wav")
+            sf.write(p, oneshot, sr)
+            files.append(p)
+
+            if pitch != 0:
                 pitched = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+                pitched = norm(pitched)
                 p = os.path.join(out, base + f"_p{pitch:+d}.wav")
                 sf.write(p, pitched, sr)
                 files.append(p)
 
-        info_path = os.path.join(out, "pack_info.txt")
-        with open(info_path, "w") as f:
-            f.write("\n".join(info_lines))
-        files.append(info_path)
-
     st.success(f"{len(selected)} chops")
 
     for fpath in files:
-        if fpath.endswith(".txt"):
-            continue
         name = Path(fpath).name
+        st.caption(name)
         st.audio(fpath)
         with open(fpath, "rb") as fh:
-            st.download_button(name, fh, file_name=name, mime="audio/wav", key=name)
+            st.download_button("Save", fh, file_name=name, mime="audio/wav", key=name)
 
     zpath = os.path.join(out, "pack.zip")
     with zipfile.ZipFile(zpath, "w") as zf:
         for fpath in files:
             zf.write(fpath, Path(fpath).name)
     with open(zpath, "rb") as fh:
-        st.download_button("Download Pack", fh, file_name="sample_pack.zip")
+        st.download_button("Download Full Pack", fh, file_name="sample_pack.zip")
