@@ -5,16 +5,22 @@ import zipfile
 from pathlib import Path
 import numpy as np
 import librosa
-from pydub import AudioSegment
+import soundfile as sf
 
 st.set_page_config(page_title="Hip Hop Sample Machine", page_icon="🎧", layout="centered")
 
 st.title("🎧 Hip Hop Sample Machine")
-st.caption("Upload a song → get 8-bar chops (original, pitched, filtered, reversed)")
+st.caption("Upload a song → get custom chops")
 
 uploaded = st.file_uploader("Drop an audio file (MP3, WAV, M4A)", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
+    col1, col2 = st.columns(2)
+    with col1:
+        bars = st.slider("Bars per chop", 2, 16, 8)
+    with col2:
+        pitch = st.slider("Pitch (semitones)", -12, 12, -3)
+
     with st.spinner("Analyzing and chopping..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix) as tmp:
             tmp.write(uploaded.getvalue())
@@ -25,8 +31,7 @@ if uploaded:
         bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
         st.metric("BPM", f"{bpm:.1f}")
 
-        # 8-bar regions
-        bar_duration = (8 * 4 * 60) / bpm
+        bar_duration = (bars * 4 * 60) / bpm
         onset_env = librosa.onset.onset_strength(y=y, sr=sr)
         onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, units="time")
         hop_length = 512
@@ -51,60 +56,41 @@ if uploaded:
             if len(selected) >= 8:
                 break
 
-        full_audio = AudioSegment.from_file(audio_path)
         out_dir = tempfile.mkdtemp()
         samples = []
 
         for idx, (start, end, energy) in enumerate(selected, 1):
-            segment = full_audio[int(start * 1000):int(end * 1000)]
-            base = f"chop_{idx:02d}_8bars"
+            start_sample = int(start * sr)
+            end_sample = int(end * sr)
+            segment = y[start_sample:end_sample]
+            base = f"chop_{idx:02d}_{bars}bars"
 
             # Original
             p = os.path.join(out_dir, f"{base}_original.wav")
-            segment.export(p, format="wav")
+            sf.write(p, segment, sr)
             samples.append(p)
 
-            # Pitched down
-            pitched = segment._spawn(
-                segment.raw_data,
-                overrides={"frame_rate": int(segment.frame_rate * (2 ** (-3 / 12)))},
-            ).set_frame_rate(segment.frame_rate)
-            p = os.path.join(out_dir, f"{base}_pitched_down.wav")
-            pitched.export(p, format="wav")
-            samples.append(p)
+            # Pitched
+            if pitch != 0:
+                pitched = librosa.effects.pitch_shift(segment, sr=sr, n_steps=pitch)
+                p = os.path.join(out_dir, f"{base}_pitched_{pitch:+d}.wav")
+                sf.write(p, pitched, sr)
+                samples.append(p)
 
             # Filtered
-            filtered = segment.low_pass_filter(8000)
+            window = 15
+            filtered = np.convolve(segment, np.ones(window)/window, mode="same")
             p = os.path.join(out_dir, f"{base}_filtered.wav")
-            filtered.export(p, format="wav")
+            sf.write(p, filtered, sr)
             samples.append(p)
 
             # Reversed
-            rev = segment.reverse()
+            rev = segment[::-1]
             p = os.path.join(out_dir, f"{base}_reversed.wav")
-            rev.export(p, format="wav")
+            sf.write(p, rev, sr)
             samples.append(p)
 
-    st.success(f"Found {len(selected)} strong 8-bar chops")
+    st.success(f"Found {len(selected)} strong {bars}-bar chops")
 
-    # Preview + individual download
     for s in samples:
-        name = Path(s).name
-        st.subheader(name)
-        st.audio(s)
-        with open(s, "rb") as f:
-            st.download_button("Download this one", f, file_name=name, mime="audio/wav", key=name)
-
-    # Full ZIP
-    zip_path = os.path.join(out_dir, "hiphop_sample_pack.zip")
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        for s in samples:
-            zf.write(s, Path(s).name)
-
-    with open(zip_path, "rb") as f:
-        st.download_button(
-            "📦 Download Full Pack (ZIP)",
-            f,
-            file_name="hiphop_sample_pack.zip",
-            mime="application/zip",
-        )
+        name =
