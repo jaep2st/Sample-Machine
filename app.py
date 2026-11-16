@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · favorites · quick pitch · weirder")
+st.caption("Best chops · 2-bar default · nudge · weirder")
 
 def process(seg, style):
     if style == "Dusty":
@@ -112,7 +112,7 @@ def detect_key(y, sr):
     key_idx = int(np.argmax(np.mean(chroma, axis=1)))
     return ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][key_idx]
 
-def find_best_chops(y, sr, bars=4, max_chops=6, weirder=False):
+def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
     beat_times = librosa.frames_to_time(beats, sr=sr)
@@ -142,7 +142,8 @@ def find_best_chops(y, sr, bars=4, max_chops=6, weirder=False):
         balance = 1.0 - abs(energy - 0.15) * 2
         score = energy * (1 + bonus) * max(0.3, balance) * (1 + end_bonus)
         if weirder:
-            score = score * (0.6 + np.random.uniform(0, 0.8))  # favor some lower/odder ones
+            # Stronger randomness + slight preference for earlier sections
+            score = score * (0.4 + np.random.uniform(0, 1.2)) * (1.0 - start / (len(y)/sr) * 0.3)
         candidates.append((start, end, score))
     
     candidates.sort(key=lambda x: x[2], reverse=True)
@@ -219,7 +220,7 @@ if uploaded:
     source_key = f"{uploaded.name}_{region_offset}_{target_bpm}_{weirder}"
     if "auto_chops" not in st.session_state or st.session_state.get("source_key") != source_key:
         with st.spinner("Finding the best chops..."):
-            selected, detected_bpm, beat_times = find_best_chops(y_source, sr, bars=4, max_chops=6, weirder=weirder)
+            selected, detected_bpm, beat_times = find_best_chops(y_source, sr, bars=2, max_chops=6, weirder=weirder)
             bpm = target_bpm if lock_bpm else detected_bpm
             st.session_state.auto_chops = []
             st.session_state.bpm = bpm
@@ -260,7 +261,7 @@ if uploaded:
     # Play favorites
     favs = [c for c in st.session_state.auto_chops if c["favorite"]]
     if favs and st.button("Play favorites"):
-        st.info(f"Playing {len(favs)} favorites — scroll to hear them")
+        st.info(f"Playing {len(favs)} favorites")
 
     col_dup, col_all = st.columns(2)
     with col_dup:
@@ -321,7 +322,64 @@ if uploaded:
     favorites = []
 
     for chop in st.session_state.auto_chops:
-        with st.expander(f"Chop {chop['id']} · Score: {chop['score']:.2f}", expanded=False):  # collapsed by default
+        # Audio players always visible
+        start_use = chop["start"]
+        if chop["humanize"] and not chop["locked"]:
+            start_use += np.random.uniform(-0.02, 0.02)
+            start_use = max(0, start_use)
+
+        start_sample = int(start_use * sr)
+        end_sample = int(min(chop["end"], duration) * sr)
+        seg = y_full[start_sample:end_sample].copy()
+
+        if chop["pitch"] != 0:
+            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
+        if chop["reverse"]:
+            seg = smart_reverse(seg, sr)
+        seg = process(seg, chop["style"])
+        seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
+        seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
+        seg = apply_swing(seg, sr, chop["swing"])
+        seg = norm(seg, chop["volume"])
+
+        name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
+        if chop["pitch"] != 0:
+            name += f"_p{chop['pitch']:+d}"
+        if chop["reverse"]:
+            name += "_rev"
+        if chop["style"] != "Clean":
+            name += f"_{chop['style'].lower()}"
+        if chop["eq"] != "None":
+            name += f"_{chop['eq'].lower().replace(' ','')}"
+        if chop["favorite"]:
+            name += "_fav"
+        name += ".wav"
+
+        tmp_path = os.path.join(out_dir, name)
+        sf.write(tmp_path, seg, sr)
+        should_include = chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]) and not chop["mute"]
+        if should_include:
+            included_files.append(tmp_path)
+            loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
+            sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
+            if chop["favorite"]:
+                favorites.append(f"Chop {chop['id']} (favorite)")
+
+        st.markdown(f"**Chop {chop['id']}** · {chop['start']:.1f}s–{chop['end']:.1f}s")
+        st.audio(tmp_path)
+        with open(tmp_path, "rb") as f:
+            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
+
+        loop_seg = smart_reverse(seg, sr) if chop["reverse"] else seg
+        looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
+        loop_name = name.replace(".wav", "_loop.wav")
+        loop_path = os.path.join(out_dir, loop_name)
+        sf.write(loop_path, looped, sr)
+        if should_include:
+            included_files.append(loop_path)
+        st.audio(loop_path)
+
+        with st.expander(f"Edit Chop {chop['id']}", expanded=False):
             c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
                 chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
@@ -351,18 +409,17 @@ if uploaded:
                 st.rerun()
 
             if not chop["locked"]:
-                preview_start = max(0, chop["start"] - 0.5)
-                preview_end = min(duration, chop["end"] + 0.5)
-                y_preview = y_full[int(preview_start*sr):int(preview_end*sr)]
-                fig, ax = plt.subplots(figsize=(8, 1.1))
-                times = np.linspace(preview_start, preview_end, len(y_preview))
-                ax.plot(times, y_preview, color="#e74c3c", linewidth=0.6)
-                ax.axvline(chop["start"], color="white", linewidth=1, linestyle="--")
-                ax.axvline(chop["end"], color="white", linewidth=1, linestyle="--")
-                ax.set_xlim(preview_start, preview_end)
-                ax.axis("off")
-                st.pyplot(fig)
-                plt.close()
+                # Nudge buttons
+                st.markdown("**Nudge**")
+                n1, n2, n3, n4 = st.columns(4)
+                if n1.button("Start -50ms", key=f"ns-{chop['id']}"):
+                    chop["start"] = max(0, chop["start"] - 0.05)
+                if n2.button("Start +50ms", key=f"ns+{chop['id']}"):
+                    chop["start"] = min(chop["end"] - 0.2, chop["start"] + 0.05)
+                if n3.button("End -50ms", key=f"ne-{chop['id']}"):
+                    chop["end"] = max(chop["start"] + 0.2, chop["end"] - 0.05)
+                if n4.button("End +50ms", key=f"ne+{chop['id']}"):
+                    chop["end"] = min(duration, chop["end"] + 0.05)
 
                 col_start, col_end = st.columns(2)
                 with col_start:
@@ -384,7 +441,6 @@ if uploaded:
 
                 chop["humanize"] = st.checkbox("Humanize start", value=chop["humanize"], key=f"hum_{chop['id']}")
 
-                # Quick pitch buttons
                 st.markdown("**Quick pitch**")
                 qp1, qp2, qp3, qp4, qp5, qp6 = st.columns(6)
                 if qp1.button("-7", key=f"p-7_{chop['id']}"):
@@ -428,67 +484,6 @@ if uploaded:
                 chop["volume"] = st.slider("Volume", 0.6, 1.4, chop["volume"], 0.05, key=f"vol_{chop['id']}")
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
-
-            if chop["mute"]:
-                st.info("Muted")
-                continue
-
-            start_use = chop["start"]
-            if chop["humanize"] and not chop["locked"]:
-                start_use += np.random.uniform(-0.02, 0.02)
-                start_use = max(0, start_use)
-
-            start_sample = int(start_use * sr)
-            end_sample = int(min(chop["end"], duration) * sr)
-            seg = y_full[start_sample:end_sample].copy()
-
-            if chop["pitch"] != 0:
-                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
-            if chop["reverse"]:
-                seg = smart_reverse(seg, sr)
-            seg = process(seg, chop["style"])
-            seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
-            seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
-            seg = apply_swing(seg, sr, chop["swing"])
-            seg = norm(seg, chop["volume"])
-
-            name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
-            if chop["pitch"] != 0:
-                name += f"_p{chop['pitch']:+d}"
-            if chop["reverse"]:
-                name += "_rev"
-            if chop["style"] != "Clean":
-                name += f"_{chop['style'].lower()}"
-            if chop["eq"] != "None":
-                name += f"_{chop['eq'].lower().replace(' ','')}"
-            if chop["favorite"]:
-                name += "_fav"
-            name += ".wav"
-
-            tmp_path = os.path.join(out_dir, name)
-            sf.write(tmp_path, seg, sr)
-            should_include = chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"])
-            if should_include:
-                included_files.append(tmp_path)
-                loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
-                sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
-                if chop["favorite"]:
-                    favorites.append(f"Chop {chop['id']} (favorite)")
-
-            st.markdown("**Single**")
-            st.audio(tmp_path)
-            with open(tmp_path, "rb") as f:
-                st.download_button("Download single", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
-
-            loop_seg = smart_reverse(seg, sr) if chop["reverse"] else seg
-            looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
-            loop_name = name.replace(".wav", "_loop.wav")
-            loop_path = os.path.join(out_dir, loop_name)
-            sf.write(loop_path, looped, sr)
-            if should_include:
-                included_files.append(loop_path)
-            st.markdown("**Loop (4x)**")
-            st.audio(loop_path)
 
     # Session note
     if favorites or loop_points:
