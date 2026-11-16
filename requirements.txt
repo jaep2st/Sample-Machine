@@ -3,3 +3,5 @@ pydub
 librosa
 soundfile
 numpy
+pyaudioop
+standard-imghdr
