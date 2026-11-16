@@ -100,19 +100,19 @@ def extract_oneshots(y, sr, max_shots=4):
 
 def separate_stems(audio_path, out_dir):
     try:
-        cmd = ["python", "-m", "demucs", "-n", "htdemucs", "-o", out_dir, audio_path]
-        subprocess.run(cmd, check=True, capture_output=True)
-        # Demucs outputs to out_dir/htdemucs/<filename>/
+        cmd = ["python", "-m", "demucs", "-n", "htdemucs", "--two-stems", "vocals", "-o", out_dir, audio_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            return {}
         base = Path(audio_path).stem
         stem_dir = Path(out_dir) / "htdemucs" / base
         stems = {}
-        for stem in ["vocals", "drums", "bass", "other"]:
+        for stem in ["vocals", "no_vocals"]:
             p = stem_dir / f"{stem}.wav"
             if p.exists():
                 stems[stem] = str(p)
         return stems
-    except Exception as e:
-        st.error(f"Stem separation failed: {e}")
+    except Exception:
         return {}
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
@@ -127,20 +127,20 @@ if uploaded:
     key = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
 
-    use_stems = st.checkbox("Separate stems first (slower)", value=False)
+    use_stems = st.checkbox("Separate stems first (may not work on free tier)", value=False)
     stem_choice = "full"
     stems = {}
 
     if use_stems:
-        with st.spinner("Separating stems with Demucs..."):
+        with st.spinner("Trying stem separation..."):
             stem_out = tempfile.mkdtemp()
             stems = separate_stems(path, stem_out)
         if stems:
-            stem_choice = st.selectbox("Chop from", ["full", "drums", "bass", "vocals", "other"])
+            stem_choice = st.selectbox("Chop from", ["full", "vocals", "no_vocals"])
         else:
-            st.warning("Stem separation unavailable — using full mix")
+            st.warning("Stem separation not available — using full mix")
+            stem_choice = "full"
 
-    # Choose source audio
     if stem_choice != "full" and stem_choice in stems:
         y_source, sr = librosa.load(stems[stem_choice], sr=44100, mono=True)
         source_label = stem_choice
@@ -232,7 +232,6 @@ if uploaded:
         st.markdown("**Loop (4x)**")
         st.audio(loop_path)
 
-    # One-shots from the chosen source
     st.divider()
     st.subheader("One-shots")
     oneshots = extract_oneshots(y_source, sr, max_shots=4)
