@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · adjust start/end · hear the loop · one-shots")
+st.caption("Best chops · adjust · hear the loop")
 
 def process(seg, style):
     if style == "Dusty":
@@ -79,19 +79,6 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
     
     return selected, bpm
 
-def extract_oneshots(y, sr, max_shots=4):
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
-    shots = []
-    for onset in onsets[:30]:
-        window = y[int(onset*sr):int((onset+0.4)*sr)]
-        if len(window) < 100:
-            continue
-        energy = float(np.mean(np.abs(window)))
-        if energy > 0.08:
-            shots.append((onset, energy))
-    shots.sort(key=lambda x: x[1], reverse=True)
-    return shots[:max_shots]
-
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
@@ -128,7 +115,7 @@ if uploaded:
     all_files = []
 
     for chop in st.session_state.auto_chops:
-        st.markdown(f"**Chop {chop['id']}**")
+        st.markdown(f"### Chop {chop['id']}")
 
         start_adjust = st.slider("Start adjust (sec)", -1.0, 1.0, chop["start"] - chop["orig_start"], 0.05, key=f"start_{chop['id']}")
         chop["start"] = max(0, chop["orig_start"] + start_adjust)
@@ -153,59 +140,4 @@ if uploaded:
         seg = y_full[start_sample:end_sample].copy()
 
         if chop["pitch"] != 0:
-            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
-        if chop["reverse"]:
-            seg = seg[::-1]
-        seg = process(seg, chop["style"])
-        seg = apply_fade(seg, 12, sr)
-        seg = norm(seg)
-
-        # Single play
-        name = f"chop_{chop['id']:02d}_{chop['start']:.1f}-{chop['end']:.1f}s"
-        if chop["pitch"] != 0:
-            name += f"_p{chop['pitch']:+d}"
-        if chop["reverse"]:
-            name += "_rev"
-        if chop["style"] != "Clean":
-            name += f"_{chop['style'].lower()}"
-        name += ".wav"
-
-        tmp_path = os.path.join(out_dir, name)
-        sf.write(tmp_path, seg, sr)
-        all_files.append(tmp_path)
-
-        st.audio(tmp_path)
-        with open(tmp_path, "rb") as f:
-            st.download_button("Download chop", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
-
-        # Loop preview (plays 4 times)
-        looped = np.tile(seg, 4)
-        loop_path = os.path.join(out_dir, f"loop_preview_{chop['id']}.wav")
-        sf.write(loop_path, looped, sr)
-        st.caption("Loop preview")
-        st.audio(loop_path)
-
-    # One-shots
-    st.divider()
-    st.subheader("One-shots")
-    oneshots = extract_oneshots(y_full, sr, max_shots=4)
-    for i, (onset, energy) in enumerate(oneshots, 1):
-        window = y_full[int(onset*sr):int((onset+0.6)*sr)]
-        window = apply_fade(window, 8, sr)
-        window = norm(window)
-        os_name = f"oneshot_{i:02d}_{onset:.1f}s.wav"
-        os_path = os.path.join(out_dir, os_name)
-        sf.write(os_path, window, sr)
-        all_files.append(os_path)
-        st.markdown(f"**One-shot {i}** · {onset:.1f}s")
-        st.audio(os_path)
-        with open(os_path, "rb") as f:
-            st.download_button("Download oneshot", f, file_name=os_name, mime="audio/wav", key=f"os_{i}")
-
-    if all_files:
-        zpath = os.path.join(out_dir, "sample_pack.zip")
-        with zipfile.ZipFile(zpath, "w") as zf:
-            for fpath in all_files:
-                zf.write(fpath, Path(fpath).name)
-        with open(zpath, "rb") as f:
-            st.download_button("Download Full Pack", f, file_name="sample_pack.zip", key="pack")
+            seg =
