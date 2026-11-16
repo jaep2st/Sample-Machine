@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · 2-bar default · nudge · weirder")
+st.caption("Best chops · length presets · favorites pack")
 
 def process(seg, style):
     if style == "Dusty":
@@ -142,7 +142,6 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
         balance = 1.0 - abs(energy - 0.15) * 2
         score = energy * (1 + bonus) * max(0.3, balance) * (1 + end_bonus)
         if weirder:
-            # Stronger randomness + slight preference for earlier sections
             score = score * (0.4 + np.random.uniform(0, 1.2)) * (1.0 - start / (len(y)/sr) * 0.3)
         candidates.append((start, end, score))
     
@@ -175,6 +174,10 @@ def snap_to_nearest_beat(time, beat_times):
     if len(beat_times) == 0:
         return time
     return beat_times[np.argmin(np.abs(beat_times - time))]
+
+def set_chop_bars(chop, bars, bpm, duration):
+    target_len = (bars * 4 * 60) / bpm
+    chop["end"] = min(duration, chop["start"] + target_len)
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 session_upload = st.file_uploader("Load previous session (JSON)", type=["json"])
@@ -258,10 +261,15 @@ if uploaded:
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
-    # Play favorites
-    favs = [c for c in st.session_state.auto_chops if c["favorite"]]
-    if favs and st.button("Play favorites"):
-        st.info(f"Playing {len(favs)} favorites")
+    # Audition and favorites
+    col_aud, col_fav = st.columns(2)
+    with col_aud:
+        if st.button("Audition all"):
+            st.info("Playing all chops")
+    with col_fav:
+        favs = [c for c in st.session_state.auto_chops if c["favorite"]]
+        if favs and st.button("Play favorites"):
+            st.info(f"Playing {len(favs)} favorites")
 
     col_dup, col_all = st.columns(2)
     with col_dup:
@@ -284,6 +292,19 @@ if uploaded:
                     chop["crossfade"] = max(chop["crossfade"], 18)
                     chop["fade_in"] = max(chop["fade_in"], 8)
                     chop["fade_out"] = max(chop["fade_out"], 8)
+            st.rerun()
+
+    # Duplicate and pitch
+    if st.button("Duplicate last + pitch variants"):
+        if st.session_state.auto_chops:
+            base = st.session_state.auto_chops[-1].copy()
+            for p in [-5, -3, 3, 5]:
+                new = base.copy()
+                new["id"] = max(c["id"] for c in st.session_state.auto_chops) + 1
+                new["pitch"] = p
+                new["locked"] = False
+                new["favorite"] = False
+                st.session_state.auto_chops.append(new)
             st.rerun()
 
     # Presets
@@ -316,13 +337,13 @@ if uploaded:
 
     out_dir = tempfile.mkdtemp()
     included_files = []
+    fav_files = []
     oneshot_files = []
     loop_points = []
     sample_map = []
     favorites = []
 
     for chop in st.session_state.auto_chops:
-        # Audio players always visible
         start_use = chop["start"]
         if chop["humanize"] and not chop["locked"]:
             start_use += np.random.uniform(-0.02, 0.02)
@@ -364,6 +385,7 @@ if uploaded:
             sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
             if chop["favorite"]:
                 favorites.append(f"Chop {chop['id']} (favorite)")
+                fav_files.append(tmp_path)
 
         st.markdown(f"**Chop {chop['id']}** · {chop['start']:.1f}s–{chop['end']:.1f}s")
         st.audio(tmp_path)
@@ -377,6 +399,8 @@ if uploaded:
         sf.write(loop_path, looped, sr)
         if should_include:
             included_files.append(loop_path)
+            if chop["favorite"]:
+                fav_files.append(loop_path)
         st.audio(loop_path)
 
         with st.expander(f"Edit Chop {chop['id']}", expanded=False):
@@ -409,7 +433,17 @@ if uploaded:
                 st.rerun()
 
             if not chop["locked"]:
-                # Nudge buttons
+                # Length presets
+                st.markdown("**Length**")
+                l1, l2, l3 = st.columns(3)
+                if l1.button("1 bar", key=f"bar1_{chop['id']}"):
+                    set_chop_bars(chop, 1, bpm, duration)
+                if l2.button("2 bar", key=f"bar2_{chop['id']}"):
+                    set_chop_bars(chop, 2, bpm, duration)
+                if l3.button("4 bar", key=f"bar4_{chop['id']}"):
+                    set_chop_bars(chop, 4, bpm, duration)
+
+                # Nudge
                 st.markdown("**Nudge**")
                 n1, n2, n3, n4 = st.columns(4)
                 if n1.button("Start -50ms", key=f"ns-{chop['id']}"):
@@ -484,6 +518,15 @@ if uploaded:
                 chop["volume"] = st.slider("Volume", 0.6, 1.4, chop["volume"], 0.05, key=f"vol_{chop['id']}")
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
+
+    # Favorites pack
+    if fav_files:
+        zpath = os.path.join(out_dir, "favorites.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in fav_files:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as f:
+            st.download_button("Download Favorites Pack", f, file_name="favorites.zip", key="favpack")
 
     # Session note
     if favorites or loop_points:
