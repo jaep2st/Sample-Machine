@@ -6,10 +6,11 @@ from pathlib import Path
 import numpy as np
 import librosa
 import soundfile as sf
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · cleaner controls")
+st.caption("Best chops · waveform · snap to beat · presets")
 
 def process(seg, style):
     if style == "Dusty":
@@ -27,25 +28,20 @@ def apply_eq(seg, sr, eq_type, amount):
     if eq_type == "None" or amount <= 0:
         return seg
     amount = max(0.1, amount)
-    
     if eq_type == "Low shelf":
         low = np.convolve(seg, np.ones(21)/21, mode="same")
         return seg * (1 - amount * 0.4) + low * (1 + amount * 1.2)
-    
     if eq_type == "High shelf":
         high = seg - np.convolve(seg, np.ones(5)/5, mode="same")
         return seg + high * amount * 2.5
-    
     if eq_type == "Low-pass":
         kernel_size = int(7 + amount * 25)
         kernel = np.ones(kernel_size) / kernel_size
         return np.convolve(seg, kernel, mode="same")
-    
     if eq_type == "High-pass":
         kernel_size = int(5 + amount * 15)
         low = np.convolve(seg, np.ones(kernel_size)/kernel_size, mode="same")
         return (seg - low) * (1 + amount * 0.8)
-    
     return seg
 
 def apply_fade(seg, fade_in_ms, fade_out_ms, sr):
@@ -128,7 +124,7 @@ def find_best_chops(y, sr, bars=4, max_chops=6):
         if len(selected) >= max_chops:
             break
     
-    return selected, bpm
+    return selected, bpm, beat_times
 
 def extract_oneshots(y, sr, max_shots=8):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
@@ -144,6 +140,11 @@ def extract_oneshots(y, sr, max_shots=8):
                 shots.append((onset, energy * peak))
     shots.sort(key=lambda x: x[1], reverse=True)
     return shots[:max_shots]
+
+def snap_to_nearest_beat(time, beat_times):
+    if len(beat_times) == 0:
+        return time
+    return beat_times[np.argmin(np.abs(beat_times - time))]
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
@@ -177,11 +178,12 @@ if uploaded:
     source_key = f"{uploaded.name}_{region_offset}_{target_bpm}"
     if "auto_chops" not in st.session_state or st.session_state.get("source_key") != source_key:
         with st.spinner("Finding the best chops..."):
-            selected, detected_bpm = find_best_chops(y_source, sr, bars=4, max_chops=6)
+            selected, detected_bpm, beat_times = find_best_chops(y_source, sr, bars=4, max_chops=6)
             bpm = target_bpm if lock_bpm else detected_bpm
             st.session_state.auto_chops = []
             st.session_state.bpm = bpm
             st.session_state.key = key
+            st.session_state.beat_times = beat_times + region_offset
             st.session_state.source_key = source_key
             
             for i, (start, end, sc) in enumerate(selected, 1):
@@ -205,7 +207,34 @@ if uploaded:
                 })
 
     bpm = st.session_state.bpm
+    beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
+
+    # Simple presets
+    if "presets" not in st.session_state:
+        st.session_state.presets = {}
+    preset_name = st.text_input("Preset name")
+    if st.button("Save current settings as preset") and preset_name:
+        if st.session_state.auto_chops:
+            st.session_state.presets[preset_name] = {
+                "pitch": st.session_state.auto_chops[0]["pitch"],
+                "style": st.session_state.auto_chops[0]["style"],
+                "eq": st.session_state.auto_chops[0]["eq"],
+                "eq_amount": st.session_state.auto_chops[0]["eq_amount"],
+                "fade_in": st.session_state.auto_chops[0]["fade_in"],
+                "fade_out": st.session_state.auto_chops[0]["fade_out"],
+                "crossfade": st.session_state.auto_chops[0]["crossfade"],
+                "volume": st.session_state.auto_chops[0]["volume"]
+            }
+            st.success(f"Saved preset: {preset_name}")
+
+    if st.session_state.presets:
+        load_preset = st.selectbox("Load preset", [""] + list(st.session_state.presets.keys()))
+        if load_preset and st.button("Apply preset"):
+            p = st.session_state.presets[load_preset]
+            for chop in st.session_state.auto_chops:
+                chop.update(p)
+            st.success(f"Applied preset: {load_preset}")
 
     out_dir = tempfile.mkdtemp()
     included_files = []
@@ -214,6 +243,20 @@ if uploaded:
     for chop in st.session_state.auto_chops:
         with st.expander(f"Chop {chop['id']} · Score: {chop['score']:.2f}", expanded=True):
             chop["include"] = st.checkbox("Include in pack", value=chop["include"], key=f"inc_{chop['id']}")
+
+            # Waveform preview
+            preview_start = max(0, chop["start"] - 0.5)
+            preview_end = min(duration, chop["end"] + 0.5)
+            y_preview = y_full[int(preview_start*sr):int(preview_end*sr)]
+            fig, ax = plt.subplots(figsize=(8, 1.5))
+            times = np.linspace(preview_start, preview_end, len(y_preview))
+            ax.plot(times, y_preview, color="#e74c3c", linewidth=0.6)
+            ax.axvline(chop["start"], color="white", linewidth=1, linestyle="--")
+            ax.axvline(chop["end"], color="white", linewidth=1, linestyle="--")
+            ax.set_xlim(preview_start, preview_end)
+            ax.axis("off")
+            st.pyplot(fig)
+            plt.close()
 
             col_start, col_end = st.columns(2)
             with col_start:
@@ -225,6 +268,10 @@ if uploaded:
             chop["end"] = min(duration, chop["orig_end"] + end_trim)
             if chop["end"] <= chop["start"] + 0.15:
                 chop["end"] = chop["start"] + 0.15
+
+            if st.button("Snap to nearest beats", key=f"snap_{chop['id']}"):
+                chop["start"] = snap_to_nearest_beat(chop["start"], beat_times)
+                chop["end"] = snap_to_nearest_beat(chop["end"], beat_times)
 
             c1, c2, c3 = st.columns(3)
             with c1:
