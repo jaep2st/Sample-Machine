@@ -12,18 +12,46 @@ st.title("Sample Machine")
 st.caption("Best · Weird · All · One-shots")
 
 def process(seg, style):
+    if len(seg) < 100:
+        return seg
     if style == "Dusty":
-        seg = np.convolve(seg, np.ones(18)/18, mode="same")
-        seg = np.tanh(seg * 1.4) * 0.82
+        # Light vinyl noise + gentle roll-off
+        seg = np.convolve(seg, np.ones(16)/16, mode="same")
+        seg = np.tanh(seg * 1.35) * 0.84
     elif style == "Warm":
-        seg = np.convolve(seg, np.ones(6)/6, mode="same")
-        seg = np.tanh(seg * 1.12) * 0.94
+        # Soft saturation, slight low boost
+        low = np.convolve(seg, np.ones(7)/7, mode="same")
+        seg = seg * 0.7 + low * 0.4
+        seg = np.tanh(seg * 1.1) * 0.95
     elif style == "Dark":
-        seg = np.convolve(seg, np.ones(28)/28, mode="same")
-        seg = seg * 0.62
+        # Heavy low-pass, quieter
+        seg = np.convolve(seg, np.ones(32)/32, mode="same")
+        seg = seg * 0.6
     elif style == "Tape":
-        seg = np.convolve(seg, np.ones(9)/9, mode="same")
-        seg = np.tanh(seg * 1.25) * 0.88
+        # Tape saturation + light compression feel
+        seg = np.convolve(seg, np.ones(8)/8, mode="same")
+        seg = np.tanh(seg * 1.28) * 0.87
+    elif style == "Crushed":
+        # Bit-crush-ish, hard clip
+        seg = np.round(seg * 12) / 12
+        seg = np.clip(seg * 1.4, -0.95, 0.95)
+    elif style == "Filtered":
+        # Band-pass feel
+        low = np.convolve(seg, np.ones(20)/20, mode="same")
+        high = seg - np.convolve(seg, np.ones(4)/4, mode="same")
+        seg = low * 0.5 + high * 0.6
+        seg = np.tanh(seg * 1.15) * 0.9
+    elif style == "Lo-fi":
+        # Soft roll-off + light noise
+        seg = np.convolve(seg, np.ones(12)/12, mode="same")
+        noise = np.random.uniform(-0.008, 0.008, len(seg))
+        seg = np.tanh((seg + noise) * 1.2) * 0.86
+    elif style == "Chorus":
+        # Slight detune feel
+        delay = int(0.012 * 44100)
+        delayed = np.pad(seg, (delay, 0))[:len(seg)]
+        seg = seg * 0.7 + delayed * 0.35
+        seg = np.tanh(seg * 1.05) * 0.93
     return seg
 
 def apply_crossfade_loop(seg, sr, crossfade_ms=25):
@@ -185,7 +213,7 @@ if uploaded:
             trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{wk}")
             pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{wk}")
             rev = st.checkbox("Reverse", key=f"r_{wk}")
-            style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{wk}")
+            style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape", "Crushed", "Filtered", "Lo-fi", "Chorus"], key=f"s_{wk}")
 
         raw_start = start + shift + trim_start
         raw_end = end + shift + trim_end
