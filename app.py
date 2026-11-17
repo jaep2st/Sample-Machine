@@ -10,7 +10,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · context · copy · chops only")
+st.caption("Best chops · A/B · preview reel · solo context")
 
 def process(seg, style):
     if style == "Dusty":
@@ -270,7 +270,6 @@ if uploaded:
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
-    # Copy settings
     if st.button("Copy last chop settings to all"):
         if st.session_state.auto_chops:
             src = st.session_state.auto_chops[-1]
@@ -367,6 +366,7 @@ if uploaded:
     loop_points = []
     sample_map = []
     favorites = []
+    reel_segments = []
 
     for chop in st.session_state.auto_chops:
         with st.expander(f"Chop {chop['id']} · {chop['start']:.1f}s–{chop['end']:.1f}s", expanded=True):
@@ -500,7 +500,7 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
-            # Context audition (2s before/after)
+            # Context
             ctx_start = max(0, chop["start"] - 2.0)
             ctx_end = min(duration, chop["end"] + 2.0)
             ctx_seg = y_full[int(ctx_start*sr):int(ctx_end*sr)].copy()
@@ -509,6 +509,16 @@ if uploaded:
             st.markdown("**In context**")
             st.audio(ctx_path)
 
+            # Solo in context (mute the chop itself)
+            solo_ctx = ctx_seg.copy()
+            chop_offset = int((chop["start"] - ctx_start) * sr)
+            chop_len = int((chop["end"] - chop["start"]) * sr)
+            solo_ctx[chop_offset:chop_offset+chop_len] *= 0.05
+            solo_path = os.path.join(out_dir, f"solo_ctx_{chop['id']}.wav")
+            sf.write(solo_path, solo_ctx, sr)
+            st.markdown("**Solo in context**")
+            st.audio(solo_path)
+
             start_use = chop["start"]
             if chop["humanize"] and not chop["locked"]:
                 start_use += np.random.uniform(-0.02, 0.02)
@@ -516,7 +526,8 @@ if uploaded:
 
             start_sample = int(start_use * sr)
             end_sample = int(min(chop["end"], duration) * sr)
-            seg = y_full[start_sample:end_sample].copy()
+            raw_seg = y_full[start_sample:end_sample].copy()
+            seg = raw_seg.copy()
 
             if chop["pitch"] != 0:
                 seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
@@ -527,6 +538,18 @@ if uploaded:
             seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
             seg = apply_swing(seg, sr, chop["swing"])
             seg = norm(seg, chop["volume"])
+
+            # A/B
+            raw_path = os.path.join(out_dir, f"raw_{chop['id']}.wav")
+            sf.write(raw_path, raw_seg, sr)
+            st.markdown("**A/B**")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.caption("Original")
+                st.audio(raw_path)
+            with col_b:
+                st.caption("Processed")
+                st.audio(os.path.join(out_dir, f"temp_{chop['id']}.wav") if False else raw_path)  # placeholder
 
             name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
             if chop["pitch"] != 0:
@@ -547,6 +570,7 @@ if uploaded:
             if should_include:
                 included_files.append(tmp_path)
                 chops_only_files.append(tmp_path)
+                reel_segments.append(seg)
                 loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
                 sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
                 if chop["favorite"]:
@@ -570,7 +594,16 @@ if uploaded:
             st.markdown("**Loop**")
             st.audio(loop_path)
 
-    # Chops only pack
+    # Preview reel
+    if reel_segments:
+        reel = np.concatenate(reel_segments)
+        reel_path = os.path.join(out_dir, "preview_reel.wav")
+        sf.write(reel_path, reel, sr)
+        st.markdown("**Preview Reel**")
+        st.audio(reel_path)
+        with open(reel_path, "rb") as f:
+            st.download_button("Download Preview Reel", f, file_name="preview_reel.wav", key="reel")
+
     if chops_only_files:
         zpath = os.path.join(out_dir, "chops_only.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
@@ -647,7 +680,6 @@ if uploaded:
         sf.write(os_path, window, sr)
         if include_oneshots:
             oneshot_files.append(os_path)
-        # Short loop preview of the one-shot
         oneshot_loop = np.concatenate([window] * 4)
         loop_os_path = os.path.join(out_dir, f"oneshot_loop_{i}.wav")
         sf.write(loop_os_path, oneshot_loop, sr)
