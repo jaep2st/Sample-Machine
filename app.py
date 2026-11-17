@@ -10,7 +10,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · reverse fixed")
+st.caption("Best chops · context · copy · chops only")
 
 def process(seg, style):
     if style == "Dusty":
@@ -93,7 +93,6 @@ def apply_swing(seg, sr, swing_amount):
     return swung
 
 def do_reverse(seg, sr):
-    # Full reverse — no smart transient keep
     return np.flip(seg).copy()
 
 def norm(seg, gain=1.0):
@@ -271,6 +270,24 @@ if uploaded:
     beat_times = st.session_state.get("beat_times", np.array([]))
     st.write(f"**{bpm:.1f} BPM** · **{key}**")
 
+    # Copy settings
+    if st.button("Copy last chop settings to all"):
+        if st.session_state.auto_chops:
+            src = st.session_state.auto_chops[-1]
+            for chop in st.session_state.auto_chops:
+                if not chop["locked"]:
+                    chop["pitch"] = src["pitch"]
+                    chop["reverse"] = src["reverse"]
+                    chop["style"] = src["style"]
+                    chop["eq"] = src["eq"]
+                    chop["eq_amount"] = src["eq_amount"]
+                    chop["fade_in"] = src["fade_in"]
+                    chop["fade_out"] = src["fade_out"]
+                    chop["crossfade"] = src["crossfade"]
+                    chop["volume"] = src["volume"]
+                    chop["swing"] = src["swing"]
+            st.rerun()
+
     col_aud, col_fav = st.columns(2)
     with col_aud:
         if st.button("Audition all"):
@@ -344,6 +361,7 @@ if uploaded:
 
     out_dir = tempfile.mkdtemp()
     included_files = []
+    chops_only_files = []
     fav_files = []
     oneshot_files = []
     loop_points = []
@@ -482,6 +500,15 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
+            # Context audition (2s before/after)
+            ctx_start = max(0, chop["start"] - 2.0)
+            ctx_end = min(duration, chop["end"] + 2.0)
+            ctx_seg = y_full[int(ctx_start*sr):int(ctx_end*sr)].copy()
+            ctx_path = os.path.join(out_dir, f"context_{chop['id']}.wav")
+            sf.write(ctx_path, ctx_seg, sr)
+            st.markdown("**In context**")
+            st.audio(ctx_path)
+
             start_use = chop["start"]
             if chop["humanize"] and not chop["locked"]:
                 start_use += np.random.uniform(-0.02, 0.02)
@@ -519,6 +546,7 @@ if uploaded:
             should_include = chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]) and not chop["mute"]
             if should_include:
                 included_files.append(tmp_path)
+                chops_only_files.append(tmp_path)
                 loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
                 sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
                 if chop["favorite"]:
@@ -541,6 +569,15 @@ if uploaded:
                     fav_files.append(loop_path)
             st.markdown("**Loop**")
             st.audio(loop_path)
+
+    # Chops only pack
+    if chops_only_files:
+        zpath = os.path.join(out_dir, "chops_only.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in chops_only_files:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as f:
+            st.download_button("Download Chops Only", f, file_name="chops_only.zip", key="chopsonly")
 
     if fav_files:
         zpath = os.path.join(out_dir, "favorites.zip")
@@ -610,8 +647,13 @@ if uploaded:
         sf.write(os_path, window, sr)
         if include_oneshots:
             oneshot_files.append(os_path)
+        # Short loop preview of the one-shot
+        oneshot_loop = np.concatenate([window] * 4)
+        loop_os_path = os.path.join(out_dir, f"oneshot_loop_{i}.wav")
+        sf.write(loop_os_path, oneshot_loop, sr)
         st.markdown(f"**One-shot {i}** · {onset:.1f}s")
         st.audio(os_path)
+        st.audio(loop_os_path)
         with open(os_path, "rb") as f:
             st.download_button("Download oneshot", f, file_name=os_name, mime="audio/wav", key=f"os_{i}")
 
