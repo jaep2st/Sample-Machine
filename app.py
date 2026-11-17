@@ -10,7 +10,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · keep original · groups · before/after")
+st.caption("Hear it · Keep it · Edit if you need to")
 
 def process(seg, style):
     if style == "Dusty":
@@ -149,11 +149,13 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
         if len(selected) >= max_chops:
             break
     
-    if selected and all(s > song_len * 0.5 for s, e, sc in selected):
-        first_half = [c for c in candidates if c[0] < song_len * 0.5]
-        if first_half:
-            first_half.sort(key=lambda x: x[2], reverse=True)
-            selected[-1] = first_half[0]
+    # Force at least 2 chops from the first half
+    first_half = [c for c in candidates if c[0] < song_len * 0.5]
+    first_half.sort(key=lambda x: x[2], reverse=True)
+    first_half_count = sum(1 for s, e, sc in selected if s < song_len * 0.5)
+    while first_half_count < 2 and first_half and len(selected) >= 2:
+        selected[-1] = first_half.pop(0)
+        first_half_count += 1
     
     return selected, bpm, beat_times
 
@@ -164,7 +166,6 @@ def extract_oneshots(y, sr, max_shots=8):
         window = y[int(onset*sr):int((onset+0.18)*sr)]
         if len(window) < 40:
             continue
-        # Favor the hit (first 80ms) over the tail
         hit = window[:int(0.08*sr)]
         tail = window[int(0.08*sr):]
         hit_energy = float(np.mean(np.abs(hit))) if len(hit) else 0
@@ -378,7 +379,73 @@ if uploaded:
     before_after_files = []
 
     for chop in st.session_state.auto_chops:
-        with st.expander(f"Chop {chop['id']} · {chop['start']:.1f}s–{chop['end']:.1f}s", expanded=True):
+        # Main view: audio only
+        start_use = chop["start"]
+        if chop["humanize"] and not chop["locked"]:
+            start_use += np.random.uniform(-0.02, 0.02)
+            start_use = max(0, start_use)
+
+        start_sample = int(start_use * sr)
+        end_sample = int(min(chop["end"], duration) * sr)
+        raw_seg = y_full[start_sample:end_sample].copy()
+        seg = raw_seg.copy()
+
+        if chop["pitch"] != 0:
+            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
+        if chop["reverse"]:
+            seg = do_reverse(seg, sr)
+        seg = process(seg, chop["style"])
+        seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
+        seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
+        seg = apply_swing(seg, sr, chop["swing"])
+        seg = norm(seg, chop["volume"])
+
+        name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
+        if chop["pitch"] != 0:
+            name += f"_p{chop['pitch']:+d}"
+        if chop["reverse"]:
+            name += "_rev"
+        if chop["style"] != "Clean":
+            name += f"_{chop['style'].lower()}"
+        if chop["eq"] != "None":
+            name += f"_{chop['eq'].lower().replace(' ','')}"
+        if chop["favorite"]:
+            name += "_fav"
+        if chop["group"]:
+            name += f"_{chop['group'].replace(' ','_')}"
+        name += ".wav"
+
+        tmp_path = os.path.join(out_dir, name)
+        sf.write(tmp_path, seg, sr)
+        should_include = chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]) and not chop["mute"]
+        if should_include:
+            included_files.append(tmp_path)
+            chops_only_files.append(tmp_path)
+            reel_segments.append(seg)
+            loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
+            sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
+            if chop["favorite"]:
+                favorites.append(f"Chop {chop['id']} (favorite)")
+                fav_files.append(tmp_path)
+            if chop["keep_original"]:
+                raw_keep = os.path.join(out_dir, name.replace(".wav", "_original.wav"))
+                sf.write(raw_keep, raw_seg, sr)
+                included_files.append(raw_keep)
+                chops_only_files.append(raw_keep)
+
+        st.markdown(f"**Chop {chop['id']}** · {chop['start']:.1f}s–{chop['end']:.1f}s")
+        st.audio(tmp_path)
+        with open(tmp_path, "rb") as f:
+            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
+
+        # Keep button
+        if st.button("Keep", key=f"keep_{chop['id']}"):
+            chop["favorite"] = True
+            chop["locked"] = True
+            st.rerun()
+
+        # Context and A/B only inside expander
+        with st.expander("Edit", expanded=False):
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             with c1:
                 chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
@@ -393,7 +460,7 @@ if uploaded:
             with c6:
                 chop["keep_original"] = st.checkbox("Keep original", value=chop["keep_original"], key=f"keep_{chop['id']}")
 
-            chop["group"] = st.text_input("Group", value=chop["group"], key=f"group_{chop['id']}", placeholder="verse / hook / etc")
+            chop["group"] = st.text_input("Group", value=chop["group"], key=f"group_{chop['id']}", placeholder="verse / hook")
 
             if st.button("Reset", key=f"reset_{chop['id']}"):
                 chop["start"] = chop["orig_start"]
@@ -514,7 +581,7 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
-            # Context
+            # Context and A/B inside expander
             ctx_start = max(0, chop["start"] - 2.0)
             ctx_end = min(duration, chop["end"] + 2.0)
             ctx_seg = y_full[int(ctx_start*sr):int(ctx_end*sr)].copy()
@@ -523,7 +590,6 @@ if uploaded:
             st.markdown("**In context**")
             st.audio(ctx_path)
 
-            # Solo in context
             solo_ctx = ctx_seg.copy()
             chop_offset = int((chop["start"] - ctx_start) * sr)
             chop_len = int((chop["end"] - chop["start"]) * sr)
@@ -533,34 +599,6 @@ if uploaded:
             st.markdown("**Solo in context**")
             st.audio(solo_path)
 
-            start_use = chop["start"]
-            if chop["humanize"] and not chop["locked"]:
-                start_use += np.random.uniform(-0.02, 0.02)
-                start_use = max(0, start_use)
-
-            start_sample = int(start_use * sr)
-            end_sample = int(min(chop["end"], duration) * sr)
-            raw_seg = y_full[start_sample:end_sample].copy()
-            seg = raw_seg.copy()
-
-            if chop["pitch"] != 0:
-                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
-            if chop["reverse"]:
-                seg = do_reverse(seg, sr)
-            seg = process(seg, chop["style"])
-            seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
-            seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
-            seg = apply_swing(seg, sr, chop["swing"])
-            seg = norm(seg, chop["volume"])
-
-            # Before/After file
-            ba = np.concatenate([raw_seg, seg])
-            ba_name = f"before_after_chop{chop['id']:02d}.wav"
-            ba_path = os.path.join(out_dir, ba_name)
-            sf.write(ba_path, ba, sr)
-            before_after_files.append(ba_path)
-
-            # A/B
             raw_path = os.path.join(out_dir, f"raw_{chop['id']}.wav")
             sf.write(raw_path, raw_seg, sr)
             st.markdown("**A/B**")
@@ -570,45 +608,14 @@ if uploaded:
                 st.audio(raw_path)
             with col_b:
                 st.caption("Processed")
-                st.audio(os.path.join(out_dir, name) if False else raw_path)
+                st.audio(tmp_path)
 
-            name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
-            if chop["pitch"] != 0:
-                name += f"_p{chop['pitch']:+d}"
-            if chop["reverse"]:
-                name += "_rev"
-            if chop["style"] != "Clean":
-                name += f"_{chop['style'].lower()}"
-            if chop["eq"] != "None":
-                name += f"_{chop['eq'].lower().replace(' ','')}"
-            if chop["favorite"]:
-                name += "_fav"
-            if chop["group"]:
-                name += f"_{chop['group'].replace(' ','_')}"
-            name += ".wav"
-
-            tmp_path = os.path.join(out_dir, name)
-            sf.write(tmp_path, seg, sr)
-            should_include = chop["include"] and not (any(c["solo"] for c in st.session_state.auto_chops) and not chop["solo"]) and not chop["mute"]
-            if should_include:
-                included_files.append(tmp_path)
-                chops_only_files.append(tmp_path)
-                reel_segments.append(seg)
-                loop_points.append(f"Chop {chop['id']}: {start_use:.3f}s - {chop['end']:.3f}s")
-                sample_map.append(f"{chop['id']},{start_use:.3f},{chop['end']-start_use:.3f},{name}")
-                if chop["favorite"]:
-                    favorites.append(f"Chop {chop['id']} (favorite)")
-                    fav_files.append(tmp_path)
-                if chop["keep_original"]:
-                    raw_keep = os.path.join(out_dir, name.replace(".wav", "_original.wav"))
-                    sf.write(raw_keep, raw_seg, sr)
-                    included_files.append(raw_keep)
-                    chops_only_files.append(raw_keep)
-
-            st.markdown("**Single**")
-            st.audio(tmp_path)
-            with open(tmp_path, "rb") as f:
-                st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
+            # Before/After
+            ba = np.concatenate([raw_seg, seg])
+            ba_name = f"before_after_chop{chop['id']:02d}.wav"
+            ba_path = os.path.join(out_dir, ba_name)
+            sf.write(ba_path, ba, sr)
+            before_after_files.append(ba_path)
 
             loop_seg = do_reverse(seg, sr) if chop["reverse"] else seg
             looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
@@ -622,7 +629,7 @@ if uploaded:
             st.markdown("**Loop**")
             st.audio(loop_path)
 
-    # Before/After pack
+    # Exports
     if before_after_files:
         zpath = os.path.join(out_dir, "before_after.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
@@ -631,7 +638,6 @@ if uploaded:
         with open(zpath, "rb") as f:
             st.download_button("Download Before/After", f, file_name="before_after.zip", key="ba")
 
-    # Preview reel
     if reel_segments:
         reel = np.concatenate(reel_segments)
         reel_path = os.path.join(out_dir, "preview_reel.wav")
