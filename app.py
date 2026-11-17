@@ -149,7 +149,6 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
         if len(selected) >= max_chops:
             break
     
-    # Force at least 2 chops from the first half
     first_half = [c for c in candidates if c[0] < song_len * 0.5]
     first_half.sort(key=lambda x: x[2], reverse=True)
     first_half_count = sum(1 for s, e, sc in selected if s < song_len * 0.5)
@@ -379,7 +378,6 @@ if uploaded:
     before_after_files = []
 
     for chop in st.session_state.auto_chops:
-        # Main view: audio only
         start_use = chop["start"]
         if chop["humanize"] and not chop["locked"]:
             start_use += np.random.uniform(-0.02, 0.02)
@@ -438,13 +436,11 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        # Keep button
-        if st.button("Keep", key=f"keep_{chop['id']}"):
+        if st.button("Keep", key=f"keepbtn_{chop['id']}"):
             chop["favorite"] = True
             chop["locked"] = True
             st.rerun()
 
-        # Context and A/B only inside expander
         with st.expander("Edit", expanded=False):
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             with c1:
@@ -458,7 +454,7 @@ if uploaded:
             with c5:
                 chop["favorite"] = st.checkbox("Favorite", value=chop["favorite"], key=f"fav_{chop['id']}")
             with c6:
-                chop["keep_original"] = st.checkbox("Keep original", value=chop["keep_original"], key=f"keep_{chop['id']}")
+                chop["keep_original"] = st.checkbox("Keep original", value=chop["keep_original"], key=f"keeporig_{chop['id']}")
 
             chop["group"] = st.text_input("Group", value=chop["group"], key=f"group_{chop['id']}", placeholder="verse / hook")
 
@@ -581,7 +577,6 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
-            # Context and A/B inside expander
             ctx_start = max(0, chop["start"] - 2.0)
             ctx_end = min(duration, chop["end"] + 2.0)
             ctx_seg = y_full[int(ctx_start*sr):int(ctx_end*sr)].copy()
@@ -610,7 +605,6 @@ if uploaded:
                 st.caption("Processed")
                 st.audio(tmp_path)
 
-            # Before/After
             ba = np.concatenate([raw_seg, seg])
             ba_name = f"before_after_chop{chop['id']:02d}.wav"
             ba_path = os.path.join(out_dir, ba_name)
@@ -629,7 +623,6 @@ if uploaded:
             st.markdown("**Loop**")
             st.audio(loop_path)
 
-    # Exports
     if before_after_files:
         zpath = os.path.join(out_dir, "before_after.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
