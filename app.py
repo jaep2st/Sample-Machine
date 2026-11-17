@@ -169,6 +169,7 @@ if uploaded:
                     st.session_state.hearted.add(chop_key)
                 st.rerun()
 
+        shift = 0.0
         trim_start = 0.0
         trim_end = 0.0
         pitch = 0
@@ -176,14 +177,16 @@ if uploaded:
         style = "Clean"
 
         with st.expander("Tweak this chop", expanded=False):
+            shift = st.slider("Shift whole chop", -2.0, 2.0, 0.0, 0.05, key=f"shift_{wk}")
             trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{wk}")
             trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{wk}")
             pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{wk}")
             rev = st.checkbox("Reverse", key=f"r_{wk}")
             style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{wk}")
 
-        adj_start = max(0, start + trim_start)
-        adj_end = min(duration, end + trim_end)
+        # Shift moves the whole window, then trim adjusts the edges
+        adj_start = max(0, start + shift + trim_start)
+        adj_end = min(duration, end + shift + trim_end)
         if adj_end <= adj_start + 0.2:
             adj_end = adj_start + 0.2
 
