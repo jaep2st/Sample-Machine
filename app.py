@@ -9,18 +9,21 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Beat-snapped · clean loops")
+st.caption("Beat-snapped · clean loops · working tweak")
 
 def process(seg, style):
     if style == "Dusty":
-        seg = np.convolve(seg, np.ones(15)/15, mode="same")
-        seg = np.tanh(seg * 1.3) * 0.85
+        seg = np.convolve(seg, np.ones(18)/18, mode="same")
+        seg = np.tanh(seg * 1.4) * 0.82
     elif style == "Warm":
-        seg = np.convolve(seg, np.ones(5)/5, mode="same")
-        seg = np.tanh(seg * 1.08) * 0.95
+        seg = np.convolve(seg, np.ones(6)/6, mode="same")
+        seg = np.tanh(seg * 1.12) * 0.94
     elif style == "Dark":
-        seg = np.convolve(seg, np.ones(25)/25, mode="same")
-        seg = seg * 0.65
+        seg = np.convolve(seg, np.ones(28)/28, mode="same")
+        seg = seg * 0.62
+    elif style == "Tape":
+        seg = np.convolve(seg, np.ones(9)/9, mode="same")
+        seg = np.tanh(seg * 1.25) * 0.88
     return seg
 
 def apply_crossfade_loop(seg, sr, crossfade_ms=25):
@@ -139,16 +142,28 @@ if uploaded:
         for start, end, i in chops:
             st.markdown(f"**Chop {i}** · from {start:.1f}s")
 
-            # Trim controls
-            trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
-            trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{i}")
+            # Default trim
+            trim_start = 0.0
+            trim_end = 0.0
+            pitch = 0
+            rev = False
+            style = "Clean"
+
+            with st.expander("Tweak", expanded=False):
+                trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
+                trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{i}")
+                pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{i}")
+                rev = st.checkbox("Reverse", key=f"r_{i}")
+                style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{i}")
+                if st.button("Snap to beat", key=f"snap_{i}"):
+                    st.session_state[f"snap_{i}"] = True
+
             adj_start = max(0, start + trim_start)
             adj_end = min(duration, end + trim_end)
             if adj_end <= adj_start + 0.2:
                 adj_end = adj_start + 0.2
 
-            # Snap button
-            if st.button("Snap to beat", key=f"snap_{i}"):
+            if st.session_state.get(f"snap_{i}", False):
                 adj_start = snap_to_beat(adj_start, beat_times)
                 adj_end = snap_to_beat(adj_end, beat_times)
                 if adj_end <= adj_start + 0.2:
@@ -160,7 +175,24 @@ if uploaded:
                 adj_end = adj_start + (bars * 4 * 60) / bpm
 
             seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
-            name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s.wav"
+
+            # Apply pitch, reverse, style
+            if pitch != 0:
+                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+            if rev:
+                seg = do_reverse(seg, sr)
+            seg = process(seg, style)
+            seg = norm(seg)
+
+            name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s"
+            if pitch != 0:
+                name += f"_p{pitch:+d}"
+            if rev:
+                name += "_rev"
+            if style != "Clean":
+                name += f"_{style.lower()}"
+            name += ".wav"
+
             tmp_path = os.path.join(out_dir, name)
             sf.write(tmp_path, seg, sr)
             included.append(tmp_path)
@@ -175,26 +207,6 @@ if uploaded:
             st.audio(tmp_path)
             with open(tmp_path, "rb") as f:
                 st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
-
-            with st.expander("Tweak", expanded=False):
-                pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{i}")
-                rev = st.checkbox("Reverse", key=f"r_{i}")
-                style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"], key=f"s_{i}")
-                if st.button("Apply", key=f"apply_{i}"):
-                    new_seg = seg.copy()
-                    if pitch != 0:
-                        new_seg = librosa.effects.pitch_shift(new_seg, sr=sr, n_steps=pitch)
-                    if rev:
-                        new_seg = do_reverse(new_seg, sr)
-                    new_seg = process(new_seg, style)
-                    new_seg = norm(new_seg)
-                    new_path = os.path.join(out_dir, f"tweaked_{i}.wav")
-                    sf.write(new_path, new_seg, sr)
-                    new_loop = apply_crossfade_loop(new_seg, sr, crossfade_ms=25)
-                    new_loop_path = os.path.join(out_dir, f"tweaked_loop_{i}.wav")
-                    sf.write(new_loop_path, new_loop, sr)
-                    st.audio(new_loop_path)
-                    st.audio(new_path)
 
         if loops_only:
             zpath = os.path.join(out_dir, "loops_only.zip")
