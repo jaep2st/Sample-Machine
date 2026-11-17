@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Beat-snapped · clean loops · tweak stays with the chop")
+st.caption("Beat-snapped · clean loops · heart the ones you like")
 
 def process(seg, style):
     if style == "Dusty":
@@ -105,6 +105,9 @@ def extract_oneshots(y, sr, max_shots=12):
     shots.sort(key=lambda x: x[2], reverse=True)
     return shots[:max_shots]
 
+if "hearted" not in st.session_state:
+    st.session_state.hearted = set()
+
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
@@ -138,9 +141,21 @@ if uploaded:
         out_dir = tempfile.mkdtemp()
         included = []
         loops_only = []
+        hearted_files = []
 
         for start, end, i in chops:
-            st.markdown(f"**Chop {i}** · from {start:.1f}s")
+            chop_key = f"chop_{i}"
+            col1, col2 = st.columns([8, 1])
+            with col1:
+                st.markdown(f"**Chop {i}** · from {start:.1f}s")
+            with col2:
+                hearted = chop_key in st.session_state.hearted
+                if st.button("♥" if hearted else "♡", key=f"heart_{i}"):
+                    if hearted:
+                        st.session_state.hearted.discard(chop_key)
+                    else:
+                        st.session_state.hearted.add(chop_key)
+                    st.rerun()
 
             # Default trim
             trim_start = 0.0
@@ -196,17 +211,29 @@ if uploaded:
             tmp_path = os.path.join(out_dir, name)
             sf.write(tmp_path, seg, sr)
             included.append(tmp_path)
+            if chop_key in st.session_state.hearted:
+                hearted_files.append(tmp_path)
 
             # Loop first
             looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
             loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
             sf.write(loop_path, looped, sr)
             loops_only.append(loop_path)
+            if chop_key in st.session_state.hearted:
+                hearted_files.append(loop_path)
 
             st.audio(loop_path)
             st.audio(tmp_path)
             with open(tmp_path, "rb") as f:
                 st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
+
+        if hearted_files:
+            zpath = os.path.join(out_dir, "favorites.zip")
+            with zipfile.ZipFile(zpath, "w") as zf:
+                for fpath in hearted_files:
+                    zf.write(fpath, Path(fpath).name)
+            with open(zpath, "rb") as f:
+                st.download_button("Download Favorites", f, file_name="favorites.zip", key="favpack")
 
         if loops_only:
             zpath = os.path.join(out_dir, "loops_only.zip")
@@ -229,18 +256,34 @@ if uploaded:
         st.write(f"{len(oneshots)} one-shots")
         os_files = []
         for i, (onset, length, energy) in enumerate(oneshots, 1):
+            os_key = f"os_{i}"
+            col1, col2 = st.columns([8, 1])
+            with col1:
+                st.markdown(f"**One-shot {i}** · from {onset:.1f}s · {length:.2f}s")
+            with col2:
+                hearted = os_key in st.session_state.hearted
+                if st.button("♥" if hearted else "♡", key=f"heartos_{i}"):
+                    if hearted:
+                        st.session_state.hearted.discard(os_key)
+                    else:
+                        st.session_state.hearted.add(os_key)
+                    st.rerun()
+
             window = y_full[int(onset*sr):int((onset+length)*sr)].copy()
             window = norm(window)
             os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
             os_path = os.path.join(out_dir, os_name)
             sf.write(os_path, window, sr)
             os_files.append(os_path)
+            if os_key in st.session_state.hearted:
+                hearted_files.append(os_path)
 
             loop_os = np.concatenate([window] * 4)
             loop_os_path = os.path.join(out_dir, f"osloop_{i}.wav")
             sf.write(loop_os_path, loop_os, sr)
+            if os_key in st.session_state.hearted:
+                hearted_files.append(loop_os_path)
 
-            st.markdown(f"**One-shot {i}** · from {onset:.1f}s · {length:.2f}s")
             st.audio(loop_os_path)
             st.audio(os_path)
             with open(os_path, "rb") as f:
