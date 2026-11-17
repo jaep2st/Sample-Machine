@@ -10,7 +10,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · A/B · preview reel · solo context")
+st.caption("Best chops · keep original · groups · before/after")
 
 def process(seg, style):
     if style == "Dusty":
@@ -158,16 +158,20 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
     return selected, bpm, beat_times
 
 def extract_oneshots(y, sr, max_shots=8):
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True, delta=0.07)
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True, delta=0.05)
     shots = []
-    for onset in onsets[:120]:
-        window = y[int(onset*sr):int((onset+0.25)*sr)]
-        if len(window) < 60:
+    for onset in onsets[:150]:
+        window = y[int(onset*sr):int((onset+0.18)*sr)]
+        if len(window) < 40:
             continue
-        energy = float(np.mean(np.abs(window)))
+        # Favor the hit (first 80ms) over the tail
+        hit = window[:int(0.08*sr)]
+        tail = window[int(0.08*sr):]
+        hit_energy = float(np.mean(np.abs(hit))) if len(hit) else 0
+        tail_energy = float(np.mean(np.abs(tail))) if len(tail) else 0
         peak = float(np.max(np.abs(window)))
-        if energy > 0.06 and peak > 0.22:
-            shots.append((onset, energy * peak * 1.5))
+        if hit_energy > 0.08 and peak > 0.25 and hit_energy > tail_energy * 1.3:
+            shots.append((onset, hit_energy * peak))
     shots.sort(key=lambda x: x[1], reverse=True)
     return shots[:max_shots]
 
@@ -263,7 +267,9 @@ if uploaded:
                     "swing": 0.0,
                     "solo": False,
                     "mute": False,
-                    "favorite": False
+                    "favorite": False,
+                    "keep_original": False,
+                    "group": ""
                 })
 
     bpm = st.session_state.bpm
@@ -306,6 +312,7 @@ if uploaded:
                 last["solo"] = False
                 last["mute"] = False
                 last["favorite"] = False
+                last["keep_original"] = False
                 st.session_state.auto_chops.append(last)
                 st.rerun()
     with col_all:
@@ -328,6 +335,7 @@ if uploaded:
                 new["pitch"] = p
                 new["locked"] = False
                 new["favorite"] = False
+                new["keep_original"] = False
                 st.session_state.auto_chops.append(new)
             st.rerun()
 
@@ -367,10 +375,11 @@ if uploaded:
     sample_map = []
     favorites = []
     reel_segments = []
+    before_after_files = []
 
     for chop in st.session_state.auto_chops:
         with st.expander(f"Chop {chop['id']} · {chop['start']:.1f}s–{chop['end']:.1f}s", expanded=True):
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
             with c1:
                 chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
             with c2:
@@ -381,6 +390,10 @@ if uploaded:
                 chop["mute"] = st.checkbox("Mute", value=chop["mute"], key=f"mute_{chop['id']}")
             with c5:
                 chop["favorite"] = st.checkbox("Favorite", value=chop["favorite"], key=f"fav_{chop['id']}")
+            with c6:
+                chop["keep_original"] = st.checkbox("Keep original", value=chop["keep_original"], key=f"keep_{chop['id']}")
+
+            chop["group"] = st.text_input("Group", value=chop["group"], key=f"group_{chop['id']}", placeholder="verse / hook / etc")
 
             if st.button("Reset", key=f"reset_{chop['id']}"):
                 chop["start"] = chop["orig_start"]
@@ -396,6 +409,7 @@ if uploaded:
                 chop["volume"] = 1.0
                 chop["swing"] = 0.0
                 chop["humanize"] = False
+                chop["keep_original"] = False
                 st.rerun()
 
             if not chop["locked"]:
@@ -509,7 +523,7 @@ if uploaded:
             st.markdown("**In context**")
             st.audio(ctx_path)
 
-            # Solo in context (mute the chop itself)
+            # Solo in context
             solo_ctx = ctx_seg.copy()
             chop_offset = int((chop["start"] - ctx_start) * sr)
             chop_len = int((chop["end"] - chop["start"]) * sr)
@@ -539,6 +553,13 @@ if uploaded:
             seg = apply_swing(seg, sr, chop["swing"])
             seg = norm(seg, chop["volume"])
 
+            # Before/After file
+            ba = np.concatenate([raw_seg, seg])
+            ba_name = f"before_after_chop{chop['id']:02d}.wav"
+            ba_path = os.path.join(out_dir, ba_name)
+            sf.write(ba_path, ba, sr)
+            before_after_files.append(ba_path)
+
             # A/B
             raw_path = os.path.join(out_dir, f"raw_{chop['id']}.wav")
             sf.write(raw_path, raw_seg, sr)
@@ -549,7 +570,7 @@ if uploaded:
                 st.audio(raw_path)
             with col_b:
                 st.caption("Processed")
-                st.audio(os.path.join(out_dir, f"temp_{chop['id']}.wav") if False else raw_path)  # placeholder
+                st.audio(os.path.join(out_dir, name) if False else raw_path)
 
             name = f"{int(bpm)}bpm_{key}_chop{chop['id']:02d}"
             if chop["pitch"] != 0:
@@ -562,6 +583,8 @@ if uploaded:
                 name += f"_{chop['eq'].lower().replace(' ','')}"
             if chop["favorite"]:
                 name += "_fav"
+            if chop["group"]:
+                name += f"_{chop['group'].replace(' ','_')}"
             name += ".wav"
 
             tmp_path = os.path.join(out_dir, name)
@@ -576,6 +599,11 @@ if uploaded:
                 if chop["favorite"]:
                     favorites.append(f"Chop {chop['id']} (favorite)")
                     fav_files.append(tmp_path)
+                if chop["keep_original"]:
+                    raw_keep = os.path.join(out_dir, name.replace(".wav", "_original.wav"))
+                    sf.write(raw_keep, raw_seg, sr)
+                    included_files.append(raw_keep)
+                    chops_only_files.append(raw_keep)
 
             st.markdown("**Single**")
             st.audio(tmp_path)
@@ -593,6 +621,15 @@ if uploaded:
                     fav_files.append(loop_path)
             st.markdown("**Loop**")
             st.audio(loop_path)
+
+    # Before/After pack
+    if before_after_files:
+        zpath = os.path.join(out_dir, "before_after.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in before_after_files:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as f:
+            st.download_button("Download Before/After", f, file_name="before_after.zip", key="ba")
 
     # Preview reel
     if reel_segments:
