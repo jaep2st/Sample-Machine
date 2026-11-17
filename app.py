@@ -27,26 +27,29 @@ def process(seg, style):
     return seg
 
 def apply_crossfade_loop(seg, sr, crossfade_ms=25):
-    if len(seg) < sr * 0.2:
-        return np.concatenate([seg] * 4)
+    if len(seg) < 100:
+        return np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5))
     cf = int(crossfade_ms / 1000 * sr)
-    cf = min(cf, len(seg)//6)
-    if cf <= 0:
-        return np.concatenate([seg] * 4)
+    cf = min(cf, max(1, len(seg)//6))
     fade_out = np.linspace(1, 0, cf)
     fade_in = np.linspace(0, 1, cf)
     looped = []
     for i in range(4):
         chunk = seg.copy()
-        if i > 0:
+        if i > 0 and cf < len(chunk):
             chunk[:cf] = chunk[:cf] * fade_in + seg[-cf:] * fade_out
         looped.append(chunk)
-    return np.concatenate(looped)
+    result = np.concatenate(looped)
+    if np.any(np.isnan(result)) or np.any(np.isinf(result)):
+        return np.tile(seg, 4)
+    return result
 
 def do_reverse(seg, sr):
-    return np.flip(seg).copy()
+    return np.flip(seg).copy() if len(seg) > 0 else seg
 
 def norm(seg, gain=1.0):
+    if len(seg) == 0:
+        return seg
     peak = np.max(np.abs(seg))
     if peak > 0:
         seg = seg / peak * 0.92 * gain
@@ -184,16 +187,18 @@ if uploaded:
             rev = st.checkbox("Reverse", key=f"r_{wk}")
             style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{wk}")
 
-        # Shift moves the whole window, then trim adjusts the edges
-        adj_start = max(0, start + shift + trim_start)
-        adj_end = min(duration, end + shift + trim_end)
-        if adj_end <= adj_start + 0.2:
-            adj_end = adj_start + 0.2
+        raw_start = start + shift + trim_start
+        raw_end = end + shift + trim_end
+        adj_start = max(0.0, min(raw_start, duration - 0.3))
+        adj_end = max(adj_start + 0.3, min(raw_end, duration))
 
         seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
-        if pitch != 0:
+        if len(seg) < 100:
+            seg = np.zeros(int(sr * 0.5))
+
+        if pitch != 0 and len(seg) > 100:
             seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
-        if rev:
+        if rev and len(seg) > 0:
             seg = do_reverse(seg, sr)
         seg = process(seg, style)
         seg = norm(seg)
@@ -208,14 +213,20 @@ if uploaded:
         name += ".wav"
 
         tmp_path = os.path.join(out_dir, name)
-        sf.write(tmp_path, seg, sr)
+        try:
+            sf.write(tmp_path, seg, sr)
+        except Exception:
+            sf.write(tmp_path, np.zeros(int(sr * 0.5)), sr)
         included.append(tmp_path)
         if chop_key in st.session_state.hearted:
             hearted_files.append(tmp_path)
 
         looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
         loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
-        sf.write(loop_path, looped, sr)
+        try:
+            sf.write(loop_path, looped, sr)
+        except Exception:
+            sf.write(loop_path, np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5)), sr)
         loops_only.append(loop_path)
         if chop_key in st.session_state.hearted:
             hearted_files.append(loop_path)
@@ -262,14 +273,20 @@ if uploaded:
             window = norm(window)
             os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
             os_path = os.path.join(out_dir, os_name)
-            sf.write(os_path, window, sr)
+            try:
+                sf.write(os_path, window, sr)
+            except Exception:
+                sf.write(os_path, np.zeros(int(sr * 0.5)), sr)
             os_files.append(os_path)
             if os_key in st.session_state.hearted:
                 hearted_files.append(os_path)
 
-            loop_os = np.concatenate([window] * 4)
+            loop_os = np.tile(window, 4) if len(window) > 0 else np.zeros(int(sr * 0.5))
             loop_os_path = os.path.join(out_dir, f"osloop_{i}.wav")
-            sf.write(loop_os_path, loop_os, sr)
+            try:
+                sf.write(loop_os_path, loop_os, sr)
+            except Exception:
+                sf.write(loop_os_path, np.zeros(int(sr * 0.5)), sr)
             if os_key in st.session_state.hearted:
                 hearted_files.append(loop_os_path)
 
