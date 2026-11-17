@@ -6,11 +6,10 @@ from pathlib import Path
 import numpy as np
 import librosa
 import soundfile as sf
-import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Beat-snapped · clean loops · waveform")
+st.caption("Beat-snapped · clean loops")
 
 def process(seg, style):
     if style == "Dusty":
@@ -83,13 +82,11 @@ def extract_oneshots(y, sr, max_shots=12):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True, delta=0.05)
     shots = []
     for onset in onsets[:200]:
-        # Adaptive length: find where energy drops
         window = y[int(onset*sr):int((onset+0.8)*sr)]
         if len(window) < 40:
             continue
         rms = np.abs(window)
         peak = float(np.max(rms))
-        # Cut when energy falls below 30% of peak
         cutoff = int(onset*sr)
         for j, val in enumerate(rms):
             if j > int(0.1*sr) and val < peak * 0.3:
@@ -141,15 +138,6 @@ if uploaded:
 
         for start, end, i in chops:
             st.markdown(f"**Chop {i}** · from {start:.1f}s")
-
-            # Waveform of the region
-            region = y_full[int(start*sr):int(end*sr)]
-            fig, ax = plt.subplots(figsize=(6, 1.2))
-            ax.plot(np.linspace(start, end, len(region)), region, color="#444")
-            ax.set_xlim(start, end)
-            ax.axis("off")
-            st.pyplot(fig)
-            plt.close()
 
             # Trim controls
             trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
