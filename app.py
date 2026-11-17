@@ -10,7 +10,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Hear it · Keep it · Next")
+st.caption("Hear it · Keep it · Skip")
 
 def process(seg, style):
     if style == "Dusty":
@@ -149,14 +149,12 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
         if len(selected) >= max_chops:
             break
     
-    # Always force 2 from the first half
     first_half = [c for c in candidates if c[0] < song_len * 0.5]
     first_half.sort(key=lambda x: x[2], reverse=True)
     first_half_count = sum(1 for s, e, sc in selected if s < song_len * 0.5)
     idx = 0
     while first_half_count < 2 and idx < len(first_half) and len(selected) >= 2:
         candidate = first_half[idx]
-        # Replace the last one that is in the second half
         for i in range(len(selected)-1, -1, -1):
             if selected[i][0] >= song_len * 0.5:
                 selected[i] = candidate
@@ -388,6 +386,7 @@ if uploaded:
     if "current_chop_idx" not in st.session_state:
         st.session_state.current_chop_idx = 0
 
+    total = len(st.session_state.auto_chops)
     for idx, chop in enumerate(st.session_state.auto_chops):
         if idx != st.session_state.current_chop_idx:
             continue
@@ -445,12 +444,11 @@ if uploaded:
                 included_files.append(raw_keep)
                 chops_only_files.append(raw_keep)
 
-        st.markdown(f"**Chop {chop['id']}** · {chop['start']:.1f}s–{chop['end']:.1f}s")
+        st.markdown(f"**Chop {chop['id']} of {total}** · {chop['start']:.1f}s–{chop['end']:.1f}s")
         st.audio(tmp_path)
         with open(tmp_path, "rb") as f:
             st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        # Loop on main view
         loop_seg = do_reverse(seg, sr) if chop["reverse"] else seg
         looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
         loop_name = name.replace(".wav", "_loop.wav")
@@ -459,19 +457,28 @@ if uploaded:
         st.markdown("**Loop**")
         st.audio(loop_path)
 
-        col_keep, col_next = st.columns(2)
+        # Context on main view
+        ctx_start = max(0, chop["start"] - 2.0)
+        ctx_end = min(duration, chop["end"] + 2.0)
+        ctx_seg = y_full[int(ctx_start*sr):int(ctx_end*sr)].copy()
+        ctx_path = os.path.join(out_dir, f"context_{chop['id']}.wav")
+        sf.write(ctx_path, ctx_seg, sr)
+        st.markdown("**In context**")
+        st.audio(ctx_path)
+
+        col_keep, col_skip = st.columns(2)
         with col_keep:
             if st.button("Keep", key=f"keepbtn_{chop['id']}"):
                 chop["favorite"] = True
                 chop["locked"] = True
+                st.session_state.current_chop_idx = (st.session_state.current_chop_idx + 1) % total
                 st.rerun()
-        with col_next:
-            if st.button("Next", key=f"next_{chop['id']}"):
-                st.session_state.current_chop_idx = (st.session_state.current_chop_idx + 1) % len(st.session_state.auto_chops)
+        with col_skip:
+            if st.button("Skip", key=f"skip_{chop['id']}"):
+                st.session_state.current_chop_idx = (st.session_state.current_chop_idx + 1) % total
                 st.rerun()
 
         with st.expander("Edit", expanded=False):
-            # Most-used controls first
             st.markdown("**Quick**")
             qp1, qp2, qp3, qp4, qp5, qp6 = st.columns(6)
             if qp1.button("-7", key=f"p-7_{chop['id']}"):
@@ -528,7 +535,6 @@ if uploaded:
             if chop["end"] <= chop["start"] + 0.15:
                 chop["end"] = chop["start"] + 0.15
 
-            # Everything else in a second expander
             with st.expander("More", expanded=False):
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
                 with c1:
@@ -608,14 +614,6 @@ if uploaded:
                     chop["volume"] = st.slider("Volume", 0.6, 1.4, chop["volume"], 0.05, key=f"vol_{chop['id']}")
                     chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                     chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
-
-            ctx_start = max(0, chop["start"] - 2.0)
-            ctx_end = min(duration, chop["end"] + 2.0)
-            ctx_seg = y_full[int(ctx_start*sr):int(ctx_end*sr)].copy()
-            ctx_path = os.path.join(out_dir, f"context_{chop['id']}.wav")
-            sf.write(ctx_path, ctx_seg, sr)
-            st.markdown("**In context**")
-            st.audio(ctx_path)
 
             solo_ctx = ctx_seg.copy()
             chop_offset = int((chop["start"] - ctx_start) * sr)
