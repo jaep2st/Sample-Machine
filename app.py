@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Clean loops · trim start/end")
+st.caption("Beat-snapped chops · clean loops")
 
 def process(seg, style):
     if style == "Dusty":
@@ -23,7 +23,7 @@ def process(seg, style):
         seg = seg * 0.65
     return seg
 
-def apply_crossfade_loop(seg, sr, crossfade_ms=20):
+def apply_crossfade_loop(seg, sr, crossfade_ms=25):
     if len(seg) < sr * 0.2:
         return np.concatenate([seg] * 4)
     cf = int(crossfade_ms / 1000 * sr)
@@ -54,20 +54,30 @@ def detect_key(y, sr):
     key_idx = int(np.argmax(np.mean(chroma, axis=1)))
     return ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][key_idx]
 
+def snap_to_beat(time, beat_times):
+    if len(beat_times) == 0:
+        return time
+    return beat_times[np.argmin(np.abs(beat_times - time))]
+
 def chop_whole_song(y, sr, bars=2):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
+    beat_times = librosa.frames_to_time(beats, sr=sr)
     song_len = len(y) / sr
     bar_len = (bars * 4 * 60) / bpm
+    
+    # Start from the first strong beat
+    start = snap_to_beat(0.5, beat_times)
     chops = []
-    start = 0.0
     i = 1
     while start + bar_len < song_len - 0.1:
-        end = start + bar_len
+        end = snap_to_beat(start + bar_len, beat_times)
+        if end <= start + 0.2:
+            end = start + bar_len
         chops.append((start, end, i))
         start = end
         i += 1
-    return chops, bpm
+    return chops, bpm, beat_times
 
 def extract_oneshots(y, sr, max_shots=12):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True, delta=0.05)
@@ -113,7 +123,7 @@ if uploaded:
 
     with tab_chops:
         with st.spinner("Chopping the whole song..."):
-            chops, bpm = chop_whole_song(y_full, sr, bars=bars)
+            chops, bpm, beat_times = chop_whole_song(y_full, sr, bars=bars)
         st.write(f"**{bpm:.1f} BPM** · {len(chops)} chops")
 
         out_dir = tempfile.mkdtemp()
@@ -130,6 +140,12 @@ if uploaded:
             if adj_end <= adj_start + 0.2:
                 adj_end = adj_start + 0.2
 
+            # Snap adjusted points to nearest beat
+            adj_start = snap_to_beat(adj_start, beat_times)
+            adj_end = snap_to_beat(adj_end, beat_times)
+            if adj_end <= adj_start + 0.2:
+                adj_end = adj_start + (bars * 4 * 60) / bpm
+
             seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
             name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s.wav"
             tmp_path = os.path.join(out_dir, name)
@@ -137,7 +153,7 @@ if uploaded:
             included.append(tmp_path)
 
             # Loop first
-            looped = apply_crossfade_loop(seg, sr, crossfade_ms=20)
+            looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
             loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
             sf.write(loop_path, looped, sr)
 
@@ -160,7 +176,7 @@ if uploaded:
                     new_seg = norm(new_seg)
                     new_path = os.path.join(out_dir, f"tweaked_{i}.wav")
                     sf.write(new_path, new_seg, sr)
-                    new_loop = apply_crossfade_loop(new_seg, sr, crossfade_ms=20)
+                    new_loop = apply_crossfade_loop(new_seg, sr, crossfade_ms=25)
                     new_loop_path = os.path.join(out_dir, f"tweaked_loop_{i}.wav")
                     sf.write(new_loop_path, new_loop, sr)
                     st.audio(new_loop_path)
