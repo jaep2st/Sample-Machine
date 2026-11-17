@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Beat-snapped · clean loops · heart the ones you like")
+st.caption("Best · Weird · All · One-shots")
 
 def process(seg, style):
     if style == "Dusty":
@@ -62,6 +62,15 @@ def snap_to_beat(time, beat_times):
         return time
     return beat_times[np.argmin(np.abs(beat_times - time))]
 
+def score_chop(y, sr, start, end):
+    seg = y[int(start*sr):int(end*sr)]
+    if len(seg) < 100:
+        return 0.0
+    rms = float(np.mean(np.abs(seg)))
+    # Prefer moderate energy
+    balance = 1.0 - abs(rms - 0.12) * 3
+    return max(0.0, rms * balance)
+
 def chop_whole_song(y, sr, bars=2):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
@@ -76,7 +85,8 @@ def chop_whole_song(y, sr, bars=2):
         end = snap_to_beat(start + bar_len, beat_times)
         if end <= start + 0.2:
             end = start + bar_len
-        chops.append((start, end, i))
+        score = score_chop(y, sr, start, end)
+        chops.append((start, end, i, score))
         start = end
         i += 1
     return chops, bpm, beat_times
@@ -131,125 +141,116 @@ if uploaded:
     bar_choice = st.radio("Bar length", ["2 bars", "4 bars", "8 bars", "16 bars"], index=0, horizontal=True)
     bars = int(bar_choice.split()[0])
 
-    tab_chops, tab_oneshots = st.tabs(["Chops", "One-shots"])
+    with st.spinner("Chopping the whole song..."):
+        all_chops, bpm, beat_times = chop_whole_song(y_full, sr, bars=bars)
 
-    with tab_chops:
-        with st.spinner("Chopping the whole song..."):
-            chops, bpm, beat_times = chop_whole_song(y_full, sr, bars=bars)
-        st.write(f"**{bpm:.1f} BPM** · {len(chops)} chops")
+    # Split into Best and Weird
+    scored = sorted(all_chops, key=lambda x: x[3], reverse=True)
+    best_chops = scored[:max(6, len(scored)//3)]
+    weird_chops = [c for c in scored if c not in best_chops][:8]
 
-        out_dir = tempfile.mkdtemp()
-        included = []
-        loops_only = []
-        hearted_files = []
+    tab_best, tab_weird, tab_all, tab_oneshots = st.tabs(["Best", "Weird", "All", "One-shots"])
 
-        for start, end, i in chops:
-            chop_key = f"chop_{i}"
-            col1, col2 = st.columns([8, 1])
-            with col1:
-                st.markdown(f"**Chop {i}** · from {start:.1f}s")
-            with col2:
-                hearted = chop_key in st.session_state.hearted
-                if st.button("♥" if hearted else "♡", key=f"heart_{i}"):
-                    if hearted:
-                        st.session_state.hearted.discard(chop_key)
-                    else:
-                        st.session_state.hearted.add(chop_key)
-                    st.rerun()
+    out_dir = tempfile.mkdtemp()
+    included = []
+    loops_only = []
+    hearted_files = []
 
-            # Default trim
-            trim_start = 0.0
-            trim_end = 0.0
-            pitch = 0
-            rev = False
-            style = "Clean"
+    def render_chop(start, end, i, label="Chop"):
+        chop_key = f"chop_{i}"
+        col1, col2 = st.columns([8, 1])
+        with col1:
+            st.markdown(f"**{label} {i}** · from {start:.1f}s")
+        with col2:
+            hearted = chop_key in st.session_state.hearted
+            if st.button("♥" if hearted else "♡", key=f"heart_{i}"):
+                if hearted:
+                    st.session_state.hearted.discard(chop_key)
+                else:
+                    st.session_state.hearted.add(chop_key)
+                st.rerun()
 
-            with st.expander("Tweak this chop", expanded=False):
-                trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
-                trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{i}")
-                pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{i}")
-                rev = st.checkbox("Reverse", key=f"r_{i}")
-                style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{i}")
-                if st.button("Snap to beat", key=f"snap_{i}"):
-                    st.session_state[f"snap_{i}"] = True
+        trim_start = 0.0
+        trim_end = 0.0
+        pitch = 0
+        rev = False
+        style = "Clean"
 
-            adj_start = max(0, start + trim_start)
-            adj_end = min(duration, end + trim_end)
-            if adj_end <= adj_start + 0.2:
-                adj_end = adj_start + 0.2
+        with st.expander("Tweak this chop", expanded=False):
+            trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
+            trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{i}")
+            pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{i}")
+            rev = st.checkbox("Reverse", key=f"r_{i}")
+            style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{i}")
+            if st.button("Snap to beat", key=f"snap_{i}"):
+                st.session_state[f"snap_{i}"] = True
 
-            if st.session_state.get(f"snap_{i}", False):
-                adj_start = snap_to_beat(adj_start, beat_times)
-                adj_end = snap_to_beat(adj_end, beat_times)
-                if adj_end <= adj_start + 0.2:
-                    adj_end = adj_start + (bars * 4 * 60) / bpm
+        adj_start = max(0, start + trim_start)
+        adj_end = min(duration, end + trim_end)
+        if adj_end <= adj_start + 0.2:
+            adj_end = adj_start + 0.2
 
+        if st.session_state.get(f"snap_{i}", False):
             adj_start = snap_to_beat(adj_start, beat_times)
             adj_end = snap_to_beat(adj_end, beat_times)
             if adj_end <= adj_start + 0.2:
                 adj_end = adj_start + (bars * 4 * 60) / bpm
 
-            seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
+        adj_start = snap_to_beat(adj_start, beat_times)
+        adj_end = snap_to_beat(adj_end, beat_times)
+        if adj_end <= adj_start + 0.2:
+            adj_end = adj_start + (bars * 4 * 60) / bpm
 
-            # Apply pitch, reverse, style
-            if pitch != 0:
-                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
-            if rev:
-                seg = do_reverse(seg, sr)
-            seg = process(seg, style)
-            seg = norm(seg)
+        seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
 
-            name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s"
-            if pitch != 0:
-                name += f"_p{pitch:+d}"
-            if rev:
-                name += "_rev"
-            if style != "Clean":
-                name += f"_{style.lower()}"
-            name += ".wav"
+        if pitch != 0:
+            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+        if rev:
+            seg = do_reverse(seg, sr)
+        seg = process(seg, style)
+        seg = norm(seg)
 
-            tmp_path = os.path.join(out_dir, name)
-            sf.write(tmp_path, seg, sr)
-            included.append(tmp_path)
-            if chop_key in st.session_state.hearted:
-                hearted_files.append(tmp_path)
+        name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s"
+        if pitch != 0:
+            name += f"_p{pitch:+d}"
+        if rev:
+            name += "_rev"
+        if style != "Clean":
+            name += f"_{style.lower()}"
+        name += ".wav"
 
-            # Loop first
-            looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
-            loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
-            sf.write(loop_path, looped, sr)
-            loops_only.append(loop_path)
-            if chop_key in st.session_state.hearted:
-                hearted_files.append(loop_path)
+        tmp_path = os.path.join(out_dir, name)
+        sf.write(tmp_path, seg, sr)
+        included.append(tmp_path)
+        if chop_key in st.session_state.hearted:
+            hearted_files.append(tmp_path)
 
-            st.audio(loop_path)
-            st.audio(tmp_path)
-            with open(tmp_path, "rb") as f:
-                st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
+        looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
+        loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
+        sf.write(loop_path, looped, sr)
+        loops_only.append(loop_path)
+        if chop_key in st.session_state.hearted:
+            hearted_files.append(loop_path)
 
-        if hearted_files:
-            zpath = os.path.join(out_dir, "favorites.zip")
-            with zipfile.ZipFile(zpath, "w") as zf:
-                for fpath in hearted_files:
-                    zf.write(fpath, Path(fpath).name)
-            with open(zpath, "rb") as f:
-                st.download_button("Download Favorites", f, file_name="favorites.zip", key="favpack")
+        st.audio(loop_path)
+        st.audio(tmp_path)
+        with open(tmp_path, "rb") as f:
+            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
 
-        if loops_only:
-            zpath = os.path.join(out_dir, "loops_only.zip")
-            with zipfile.ZipFile(zpath, "w") as zf:
-                for fpath in loops_only:
-                    zf.write(fpath, Path(fpath).name)
-            with open(zpath, "rb") as f:
-                st.download_button("Download Loops Only", f, file_name="loops_only.zip", key="loopsonly")
+    with tab_best:
+        st.write(f"**{bpm:.1f} BPM** · {len(best_chops)} best chops")
+        for start, end, i, score in best_chops:
+            render_chop(start, end, i, "Best")
 
-        if included:
-            zpath = os.path.join(out_dir, "all_chops.zip")
-            with zipfile.ZipFile(zpath, "w") as zf:
-                for fpath in included:
-                    zf.write(fpath, Path(fpath).name)
-            with open(zpath, "rb") as f:
-                st.download_button("Download All Chops", f, file_name="all_chops.zip", key="allchops")
+    with tab_weird:
+        st.write(f"**{bpm:.1f} BPM** · {len(weird_chops)} weird chops")
+        for start, end, i, score in weird_chops:
+            render_chop(start, end, i, "Weird")
+
+    with tab_all:
+        st.write(f"**{bpm:.1f} BPM** · {len(all_chops)} chops")
+        for start, end, i, score in all_chops:
+            render_chop(start, end, i, "Chop")
 
     with tab_oneshots:
         oneshots = extract_oneshots(y_full, sr)
@@ -296,3 +297,27 @@ if uploaded:
                     zf.write(fpath, Path(fpath).name)
             with open(zpath, "rb") as f:
                 st.download_button("Download All One-shots", f, file_name="oneshots.zip", key="allos")
+
+    if hearted_files:
+        zpath = os.path.join(out_dir, "favorites.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in hearted_files:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as f:
+            st.download_button("Download Favorites", f, file_name="favorites.zip", key="favpack")
+
+    if loops_only:
+        zpath = os.path.join(out_dir, "loops_only.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in loops_only:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as f:
+            st.download_button("Download Loops Only", f, file_name="loops_only.zip", key="loopsonly")
+
+    if included:
+        zpath = os.path.join(out_dir, "all_chops.zip")
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for fpath in included:
+                zf.write(fpath, Path(fpath).name)
+        with open(zpath, "rb") as f:
+            st.download_button("Download All Chops", f, file_name="all_chops.zip", key="allchops")
