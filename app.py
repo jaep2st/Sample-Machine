@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · length presets · favorites pack")
+st.caption("Best chops · distributed · length presets")
 
 def process(seg, style):
     if style == "Dusty":
@@ -120,12 +120,13 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
     rms = librosa.feature.rms(y=y)[0]
     times = librosa.times_like(rms, sr=sr)
+    song_len = len(y) / sr
     duration = (bars * 4 * 60) / bpm
     
     candidates = []
     for start in onsets:
         end = start + duration
-        if end > len(y)/sr - 0.1:
+        if end > song_len - 0.1:
             continue
         mask = (times >= start) & (times <= end)
         if not np.any(mask):
@@ -142,7 +143,7 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
         balance = 1.0 - abs(energy - 0.15) * 2
         score = energy * (1 + bonus) * max(0.3, balance) * (1 + end_bonus)
         if weirder:
-            score = score * (0.4 + np.random.uniform(0, 1.2)) * (1.0 - start / (len(y)/sr) * 0.3)
+            score = score * (0.4 + np.random.uniform(0, 1.2)) * (1.0 - start / song_len * 0.4)
         candidates.append((start, end, score))
     
     candidates.sort(key=lambda x: x[2], reverse=True)
@@ -153,6 +154,14 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
             selected.append((s, e, sc))
         if len(selected) >= max_chops:
             break
+    
+    # Force distribution: if all chops are in the last 60%, replace lowest with best from first half
+    if selected and all(s > song_len * 0.5 for s, e, sc in selected):
+        first_half = [c for c in candidates if c[0] < song_len * 0.5]
+        if first_half:
+            first_half.sort(key=lambda x: x[2], reverse=True)
+            # Replace the lowest scoring selected chop
+            selected[-1] = first_half[0]
     
     return selected, bpm, beat_times
 
