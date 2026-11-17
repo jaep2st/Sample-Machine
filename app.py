@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Whole song · bar length · loops ready")
+st.caption("Clean loops · trim start/end")
 
 def process(seg, style):
     if style == "Dusty":
@@ -23,11 +23,11 @@ def process(seg, style):
         seg = seg * 0.65
     return seg
 
-def apply_crossfade_loop(seg, sr, crossfade_ms=12):
-    if crossfade_ms <= 0 or len(seg) < sr * 0.15:
+def apply_crossfade_loop(seg, sr, crossfade_ms=20):
+    if len(seg) < sr * 0.2:
         return np.concatenate([seg] * 4)
     cf = int(crossfade_ms / 1000 * sr)
-    cf = min(cf, len(seg)//5)
+    cf = min(cf, len(seg)//6)
     if cf <= 0:
         return np.concatenate([seg] * 4)
     fade_out = np.linspace(1, 0, cf)
@@ -120,18 +120,27 @@ if uploaded:
         included = []
 
         for start, end, i in chops:
-            seg = y_full[int(start*sr):int(end*sr)].copy()
-            name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{start:.1f}s.wav"
+            st.markdown(f"**Chop {i}** · from {start:.1f}s")
+
+            # Trim controls
+            trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
+            trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{i}")
+            adj_start = max(0, start + trim_start)
+            adj_end = min(duration, end + trim_end)
+            if adj_end <= adj_start + 0.2:
+                adj_end = adj_start + 0.2
+
+            seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
+            name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s.wav"
             tmp_path = os.path.join(out_dir, name)
             sf.write(tmp_path, seg, sr)
             included.append(tmp_path)
 
             # Loop first
-            looped = apply_crossfade_loop(seg, sr)
+            looped = apply_crossfade_loop(seg, sr, crossfade_ms=20)
             loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
             sf.write(loop_path, looped, sr)
 
-            st.markdown(f"**Chop {i}** · from {start:.1f}s")
             st.audio(loop_path)
             st.audio(tmp_path)
             with open(tmp_path, "rb") as f:
@@ -151,7 +160,7 @@ if uploaded:
                     new_seg = norm(new_seg)
                     new_path = os.path.join(out_dir, f"tweaked_{i}.wav")
                     sf.write(new_path, new_seg, sr)
-                    new_loop = apply_crossfade_loop(new_seg, sr)
+                    new_loop = apply_crossfade_loop(new_seg, sr, crossfade_ms=20)
                     new_loop_path = os.path.join(out_dir, f"tweaked_loop_{i}.wav")
                     sf.write(new_loop_path, new_loop, sr)
                     st.audio(new_loop_path)
@@ -177,7 +186,6 @@ if uploaded:
             sf.write(os_path, window, sr)
             os_files.append(os_path)
 
-            # Loop first
             loop_os = np.concatenate([window] * 4)
             loop_os_path = os.path.join(out_dir, f"osloop_{i}.wav")
             sf.write(loop_os_path, loop_os, sr)
