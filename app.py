@@ -6,10 +6,11 @@ from pathlib import Path
 import numpy as np
 import librosa
 import soundfile as sf
+import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Beat-snapped chops · clean loops")
+st.caption("Beat-snapped · clean loops · waveform")
 
 def process(seg, style):
     if style == "Dusty":
@@ -66,7 +67,6 @@ def chop_whole_song(y, sr, bars=2):
     song_len = len(y) / sr
     bar_len = (bars * 4 * 60) / bpm
     
-    # Start from the first strong beat
     start = snap_to_beat(0.5, beat_times)
     chops = []
     i = 1
@@ -83,17 +83,26 @@ def extract_oneshots(y, sr, max_shots=12):
     onsets = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True, delta=0.05)
     shots = []
     for onset in onsets[:200]:
-        window = y[int(onset*sr):int((onset+0.18)*sr)]
+        # Adaptive length: find where energy drops
+        window = y[int(onset*sr):int((onset+0.8)*sr)]
         if len(window) < 40:
             continue
-        hit = window[:int(0.08*sr)]
-        tail = window[int(0.08*sr):]
+        rms = np.abs(window)
+        peak = float(np.max(rms))
+        # Cut when energy falls below 30% of peak
+        cutoff = int(onset*sr)
+        for j, val in enumerate(rms):
+            if j > int(0.1*sr) and val < peak * 0.3:
+                cutoff = int(onset*sr) + j
+                break
+        length = min(0.8, (cutoff - int(onset*sr)) / sr)
+        if length < 0.15:
+            length = 0.3
+        hit = y[int(onset*sr):int((onset+0.08)*sr)]
         hit_energy = float(np.mean(np.abs(hit))) if len(hit) else 0
-        tail_energy = float(np.mean(np.abs(tail))) if len(tail) else 0
-        peak = float(np.max(np.abs(window)))
-        if hit_energy > 0.08 and peak > 0.25 and hit_energy > tail_energy * 1.3:
-            shots.append((onset, hit_energy * peak))
-    shots.sort(key=lambda x: x[1], reverse=True)
+        if hit_energy > 0.08 and peak > 0.25:
+            shots.append((onset, length, hit_energy * peak))
+    shots.sort(key=lambda x: x[2], reverse=True)
     return shots[:max_shots]
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
@@ -128,9 +137,19 @@ if uploaded:
 
         out_dir = tempfile.mkdtemp()
         included = []
+        loops_only = []
 
         for start, end, i in chops:
             st.markdown(f"**Chop {i}** · from {start:.1f}s")
+
+            # Waveform of the region
+            region = y_full[int(start*sr):int(end*sr)]
+            fig, ax = plt.subplots(figsize=(6, 1.2))
+            ax.plot(np.linspace(start, end, len(region)), region, color="#444")
+            ax.set_xlim(start, end)
+            ax.axis("off")
+            st.pyplot(fig)
+            plt.close()
 
             # Trim controls
             trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
@@ -140,7 +159,13 @@ if uploaded:
             if adj_end <= adj_start + 0.2:
                 adj_end = adj_start + 0.2
 
-            # Snap adjusted points to nearest beat
+            # Snap button
+            if st.button("Snap to beat", key=f"snap_{i}"):
+                adj_start = snap_to_beat(adj_start, beat_times)
+                adj_end = snap_to_beat(adj_end, beat_times)
+                if adj_end <= adj_start + 0.2:
+                    adj_end = adj_start + (bars * 4 * 60) / bpm
+
             adj_start = snap_to_beat(adj_start, beat_times)
             adj_end = snap_to_beat(adj_end, beat_times)
             if adj_end <= adj_start + 0.2:
@@ -156,6 +181,7 @@ if uploaded:
             looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
             loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
             sf.write(loop_path, looped, sr)
+            loops_only.append(loop_path)
 
             st.audio(loop_path)
             st.audio(tmp_path)
@@ -182,6 +208,14 @@ if uploaded:
                     st.audio(new_loop_path)
                     st.audio(new_path)
 
+        if loops_only:
+            zpath = os.path.join(out_dir, "loops_only.zip")
+            with zipfile.ZipFile(zpath, "w") as zf:
+                for fpath in loops_only:
+                    zf.write(fpath, Path(fpath).name)
+            with open(zpath, "rb") as f:
+                st.download_button("Download Loops Only", f, file_name="loops_only.zip", key="loopsonly")
+
         if included:
             zpath = os.path.join(out_dir, "all_chops.zip")
             with zipfile.ZipFile(zpath, "w") as zf:
@@ -194,8 +228,8 @@ if uploaded:
         oneshots = extract_oneshots(y_full, sr)
         st.write(f"{len(oneshots)} one-shots")
         os_files = []
-        for i, (onset, energy) in enumerate(oneshots, 1):
-            window = y_full[int(onset*sr):int((onset+0.5)*sr)].copy()
+        for i, (onset, length, energy) in enumerate(oneshots, 1):
+            window = y_full[int(onset*sr):int((onset+length)*sr)].copy()
             window = norm(window)
             os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
             os_path = os.path.join(out_dir, os_name)
@@ -206,7 +240,7 @@ if uploaded:
             loop_os_path = os.path.join(out_dir, f"osloop_{i}.wav")
             sf.write(loop_os_path, loop_os, sr)
 
-            st.markdown(f"**One-shot {i}** · from {onset:.1f}s")
+            st.markdown(f"**One-shot {i}** · from {onset:.1f}s · {length:.2f}s")
             st.audio(loop_os_path)
             st.audio(os_path)
             with open(os_path, "rb") as f:
