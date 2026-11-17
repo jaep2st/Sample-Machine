@@ -2,7 +2,6 @@ import streamlit as st
 import os
 import tempfile
 import zipfile
-import json
 from pathlib import Path
 import numpy as np
 import librosa
@@ -10,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Whole song · bar length · chops + one-shots")
+st.caption("Whole song · bar length · loops ready")
 
 def process(seg, style):
     if style == "Dusty":
@@ -22,38 +21,6 @@ def process(seg, style):
     elif style == "Dark":
         seg = np.convolve(seg, np.ones(25)/25, mode="same")
         seg = seg * 0.65
-    return seg
-
-def apply_eq(seg, sr, eq_type, amount):
-    if eq_type == "None" or amount <= 0:
-        return seg
-    amount = max(0.1, amount)
-    if eq_type == "Low shelf":
-        low = np.convolve(seg, np.ones(21)/21, mode="same")
-        return seg * (1 - amount * 0.4) + low * (1 + amount * 1.2)
-    if eq_type == "High shelf":
-        high = seg - np.convolve(seg, np.ones(5)/5, mode="same")
-        return seg + high * amount * 2.5
-    if eq_type == "Low-pass":
-        kernel_size = int(7 + amount * 25)
-        kernel = np.ones(kernel_size) / kernel_size
-        return np.convolve(seg, kernel, mode="same")
-    if eq_type == "High-pass":
-        kernel_size = int(5 + amount * 15)
-        low = np.convolve(seg, np.ones(kernel_size)/kernel_size, mode="same")
-        return (seg - low) * (1 + amount * 0.8)
-    return seg
-
-def apply_fade(seg, fade_in_ms, fade_out_ms, sr):
-    seg = seg.copy()
-    if fade_in_ms > 0:
-        fi = min(int(fade_in_ms / 1000 * sr), len(seg)//3)
-        if fi > 0:
-            seg[:fi] *= np.linspace(0, 1, fi)
-    if fade_out_ms > 0:
-        fo = min(int(fade_out_ms / 1000 * sr), len(seg)//3)
-        if fo > 0:
-            seg[-fo:] *= np.linspace(1, 0, fo)
     return seg
 
 def apply_crossfade_loop(seg, sr, crossfade_ms=12):
@@ -159,15 +126,16 @@ if uploaded:
             sf.write(tmp_path, seg, sr)
             included.append(tmp_path)
 
-            st.markdown(f"**Chop {i}** · from {start:.1f}s")
-            st.audio(tmp_path)
-            with open(tmp_path, "rb") as f:
-                st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
-
+            # Loop first
             looped = apply_crossfade_loop(seg, sr)
             loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
             sf.write(loop_path, looped, sr)
+
+            st.markdown(f"**Chop {i}** · from {start:.1f}s")
             st.audio(loop_path)
+            st.audio(tmp_path)
+            with open(tmp_path, "rb") as f:
+                st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
 
             with st.expander("Tweak", expanded=False):
                 pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{i}")
@@ -183,6 +151,10 @@ if uploaded:
                     new_seg = norm(new_seg)
                     new_path = os.path.join(out_dir, f"tweaked_{i}.wav")
                     sf.write(new_path, new_seg, sr)
+                    new_loop = apply_crossfade_loop(new_seg, sr)
+                    new_loop_path = os.path.join(out_dir, f"tweaked_loop_{i}.wav")
+                    sf.write(new_loop_path, new_loop, sr)
+                    st.audio(new_loop_path)
                     st.audio(new_path)
 
         if included:
@@ -204,14 +176,17 @@ if uploaded:
             os_path = os.path.join(out_dir, os_name)
             sf.write(os_path, window, sr)
             os_files.append(os_path)
-            st.markdown(f"**One-shot {i}** · from {onset:.1f}s")
-            st.audio(os_path)
-            with open(os_path, "rb") as f:
-                st.download_button("Download", f, file_name=os_name, mime="audio/wav", key=f"osdl_{i}")
+
+            # Loop first
             loop_os = np.concatenate([window] * 4)
             loop_os_path = os.path.join(out_dir, f"osloop_{i}.wav")
             sf.write(loop_os_path, loop_os, sr)
+
+            st.markdown(f"**One-shot {i}** · from {onset:.1f}s")
             st.audio(loop_os_path)
+            st.audio(os_path)
+            with open(os_path, "rb") as f:
+                st.download_button("Download", f, file_name=os_name, mime="audio/wav", key=f"osdl_{i}")
 
         if os_files:
             zpath = os.path.join(out_dir, "oneshots.zip")
