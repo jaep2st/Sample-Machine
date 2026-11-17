@@ -10,7 +10,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Best chops · pitch & reverse fixed")
+st.caption("Best chops · reverse fixed")
 
 def process(seg, style):
     if style == "Dusty":
@@ -92,13 +92,9 @@ def apply_swing(seg, sr, swing_amount):
         swung[start2:end2] = seg[src_start:src_end]
     return swung
 
-def smart_reverse(seg, sr):
-    transient_len = min(int(0.04 * sr), len(seg)//4)
-    if transient_len < 100:
-        return np.flip(seg).copy()
-    transient = seg[:transient_len].copy()
-    rest = np.flip(seg[transient_len:]).copy()
-    return np.concatenate([transient, rest])
+def do_reverse(seg, sr):
+    # Full reverse — no smart transient keep
+    return np.flip(seg).copy()
 
 def norm(seg, gain=1.0):
     peak = np.max(np.abs(seg))
@@ -458,7 +454,10 @@ if uploaded:
                 with c1:
                     chop["pitch"] = st.slider("Pitch", -12, 12, chop["pitch"], key=f"pitch_{chop['id']}")
                 with c2:
-                    chop["reverse"] = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
+                    rev = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
+                    if rev != chop["reverse"]:
+                        chop["reverse"] = rev
+                        st.rerun()
                 with c3:
                     chop["style"] = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"],
                                                  index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
@@ -483,7 +482,6 @@ if uploaded:
                 chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
                 chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
-            # Process AFTER controls so pitch/reverse always apply
             start_use = chop["start"]
             if chop["humanize"] and not chop["locked"]:
                 start_use += np.random.uniform(-0.02, 0.02)
@@ -496,7 +494,7 @@ if uploaded:
             if chop["pitch"] != 0:
                 seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=chop["pitch"])
             if chop["reverse"]:
-                seg = smart_reverse(seg, sr)
+                seg = do_reverse(seg, sr)
             seg = process(seg, chop["style"])
             seg = apply_eq(seg, sr, chop["eq"], chop["eq_amount"])
             seg = apply_fade(seg, chop["fade_in"], chop["fade_out"], sr)
@@ -532,7 +530,7 @@ if uploaded:
             with open(tmp_path, "rb") as f:
                 st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-            loop_seg = smart_reverse(seg, sr) if chop["reverse"] else seg
+            loop_seg = do_reverse(seg, sr) if chop["reverse"] else seg
             looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
             loop_name = name.replace(".wav", "_loop.wav")
             loop_path = os.path.join(out_dir, loop_name)
@@ -599,7 +597,7 @@ if uploaded:
         if oneshot_pitch != 0:
             window = librosa.effects.pitch_shift(window, sr=sr, n_steps=oneshot_pitch)
         if reverse_oneshots:
-            window = smart_reverse(window, sr)
+            window = do_reverse(window, sr)
         window = apply_fade(window, 4, 4, sr)
         window = norm(window)
         os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s"
