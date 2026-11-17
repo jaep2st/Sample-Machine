@@ -10,7 +10,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Hear it · Keep it · Edit if you need to")
+st.caption("Hear it · Keep it · Next")
 
 def process(seg, style):
     if style == "Dusty":
@@ -149,12 +149,20 @@ def find_best_chops(y, sr, bars=2, max_chops=6, weirder=False):
         if len(selected) >= max_chops:
             break
     
+    # Always force 2 from the first half
     first_half = [c for c in candidates if c[0] < song_len * 0.5]
     first_half.sort(key=lambda x: x[2], reverse=True)
     first_half_count = sum(1 for s, e, sc in selected if s < song_len * 0.5)
-    while first_half_count < 2 and first_half and len(selected) >= 2:
-        selected[-1] = first_half.pop(0)
-        first_half_count += 1
+    idx = 0
+    while first_half_count < 2 and idx < len(first_half) and len(selected) >= 2:
+        candidate = first_half[idx]
+        # Replace the last one that is in the second half
+        for i in range(len(selected)-1, -1, -1):
+            if selected[i][0] >= song_len * 0.5:
+                selected[i] = candidate
+                first_half_count += 1
+                break
+        idx += 1
     
     return selected, bpm, beat_times
 
@@ -377,7 +385,13 @@ if uploaded:
     reel_segments = []
     before_after_files = []
 
-    for chop in st.session_state.auto_chops:
+    if "current_chop_idx" not in st.session_state:
+        st.session_state.current_chop_idx = 0
+
+    for idx, chop in enumerate(st.session_state.auto_chops):
+        if idx != st.session_state.current_chop_idx:
+            continue
+
         start_use = chop["start"]
         if chop["humanize"] and not chop["locked"]:
             start_use += np.random.uniform(-0.02, 0.02)
@@ -436,146 +450,164 @@ if uploaded:
         with open(tmp_path, "rb") as f:
             st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{chop['id']}")
 
-        if st.button("Keep", key=f"keepbtn_{chop['id']}"):
-            chop["favorite"] = True
-            chop["locked"] = True
-            st.rerun()
+        # Loop on main view
+        loop_seg = do_reverse(seg, sr) if chop["reverse"] else seg
+        looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
+        loop_name = name.replace(".wav", "_loop.wav")
+        loop_path = os.path.join(out_dir, loop_name)
+        sf.write(loop_path, looped, sr)
+        st.markdown("**Loop**")
+        st.audio(loop_path)
 
-        with st.expander("Edit", expanded=False):
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            with c1:
-                chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
-            with c2:
-                chop["locked"] = st.checkbox("Lock", value=chop["locked"], key=f"lock_{chop['id']}")
-            with c3:
-                chop["solo"] = st.checkbox("Solo", value=chop["solo"], key=f"solo_{chop['id']}")
-            with c4:
-                chop["mute"] = st.checkbox("Mute", value=chop["mute"], key=f"mute_{chop['id']}")
-            with c5:
-                chop["favorite"] = st.checkbox("Favorite", value=chop["favorite"], key=f"fav_{chop['id']}")
-            with c6:
-                chop["keep_original"] = st.checkbox("Keep original", value=chop["keep_original"], key=f"keeporig_{chop['id']}")
-
-            chop["group"] = st.text_input("Group", value=chop["group"], key=f"group_{chop['id']}", placeholder="verse / hook")
-
-            if st.button("Reset", key=f"reset_{chop['id']}"):
-                chop["start"] = chop["orig_start"]
-                chop["end"] = chop["orig_end"]
-                chop["pitch"] = 0
-                chop["reverse"] = False
-                chop["style"] = "Clean"
-                chop["eq"] = "None"
-                chop["eq_amount"] = 0.7
-                chop["fade_in"] = 6
-                chop["fade_out"] = 6
-                chop["crossfade"] = 12
-                chop["volume"] = 1.0
-                chop["swing"] = 0.0
-                chop["humanize"] = False
-                chop["keep_original"] = False
+        col_keep, col_next = st.columns(2)
+        with col_keep:
+            if st.button("Keep", key=f"keepbtn_{chop['id']}"):
+                chop["favorite"] = True
+                chop["locked"] = True
+                st.rerun()
+        with col_next:
+            if st.button("Next", key=f"next_{chop['id']}"):
+                st.session_state.current_chop_idx = (st.session_state.current_chop_idx + 1) % len(st.session_state.auto_chops)
                 st.rerun()
 
-            if not chop["locked"]:
-                st.markdown("**Length**")
-                l1, l2, l3 = st.columns(3)
-                if l1.button("1 bar", key=f"bar1_{chop['id']}"):
-                    set_chop_bars(chop, 1, bpm, duration)
-                    st.rerun()
-                if l2.button("2 bar", key=f"bar2_{chop['id']}"):
-                    set_chop_bars(chop, 2, bpm, duration)
-                    st.rerun()
-                if l3.button("4 bar", key=f"bar4_{chop['id']}"):
-                    set_chop_bars(chop, 4, bpm, duration)
+        with st.expander("Edit", expanded=False):
+            # Most-used controls first
+            st.markdown("**Quick**")
+            qp1, qp2, qp3, qp4, qp5, qp6 = st.columns(6)
+            if qp1.button("-7", key=f"p-7_{chop['id']}"):
+                chop["pitch"] = -7
+                st.rerun()
+            if qp2.button("-5", key=f"p-5_{chop['id']}"):
+                chop["pitch"] = -5
+                st.rerun()
+            if qp3.button("-3", key=f"p-3_{chop['id']}"):
+                chop["pitch"] = -3
+                st.rerun()
+            if qp4.button("+3", key=f"p+3_{chop['id']}"):
+                chop["pitch"] = 3
+                st.rerun()
+            if qp5.button("+5", key=f"p+5_{chop['id']}"):
+                chop["pitch"] = 5
+                st.rerun()
+            if qp6.button("+7", key=f"p+7_{chop['id']}"):
+                chop["pitch"] = 7
+                st.rerun()
+
+            c1, c2 = st.columns(2)
+            with c1:
+                chop["pitch"] = st.slider("Pitch", -12, 12, chop["pitch"], key=f"pitch_{chop['id']}")
+            with c2:
+                rev = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
+                if rev != chop["reverse"]:
+                    chop["reverse"] = rev
                     st.rerun()
 
-                st.markdown("**Nudge**")
-                n1, n2, n3, n4 = st.columns(4)
-                if n1.button("Start -50ms", key=f"ns-{chop['id']}"):
-                    chop["start"] = max(0, chop["start"] - 0.05)
-                    st.rerun()
-                if n2.button("Start +50ms", key=f"ns+{chop['id']}"):
-                    chop["start"] = min(chop["end"] - 0.2, chop["start"] + 0.05)
-                    st.rerun()
-                if n3.button("End -50ms", key=f"ne-{chop['id']}"):
-                    chop["end"] = max(chop["start"] + 0.2, chop["end"] - 0.05)
-                    st.rerun()
-                if n4.button("End +50ms", key=f"ne+{chop['id']}"):
-                    chop["end"] = min(duration, chop["end"] + 0.05)
-                    st.rerun()
+            st.markdown("**Trim**")
+            n1, n2, n3, n4 = st.columns(4)
+            if n1.button("Start -50ms", key=f"ns-{chop['id']}"):
+                chop["start"] = max(0, chop["start"] - 0.05)
+                st.rerun()
+            if n2.button("Start +50ms", key=f"ns+{chop['id']}"):
+                chop["start"] = min(chop["end"] - 0.2, chop["start"] + 0.05)
+                st.rerun()
+            if n3.button("End -50ms", key=f"ne-{chop['id']}"):
+                chop["end"] = max(chop["start"] + 0.2, chop["end"] - 0.05)
+                st.rerun()
+            if n4.button("End +50ms", key=f"ne+{chop['id']}"):
+                chop["end"] = min(duration, chop["end"] + 0.05)
+                st.rerun()
 
-                col_start, col_end = st.columns(2)
-                with col_start:
-                    start_trim = st.slider("Trim start", -0.4, 0.4, chop["start"] - chop["orig_start"], 0.01, key=f"st_{chop['id']}")
-                with col_end:
-                    end_trim = st.slider("Trim end", -0.4, 0.4, chop["end"] - chop["orig_end"], 0.01, key=f"et_{chop['id']}")
+            col_start, col_end = st.columns(2)
+            with col_start:
+                start_trim = st.slider("Trim start", -0.4, 0.4, chop["start"] - chop["orig_start"], 0.01, key=f"st_{chop['id']}")
+            with col_end:
+                end_trim = st.slider("Trim end", -0.4, 0.4, chop["end"] - chop["orig_end"], 0.01, key=f"et_{chop['id']}")
 
-                chop["start"] = max(0, chop["orig_start"] + start_trim)
-                chop["end"] = min(duration, chop["orig_end"] + end_trim)
-                if chop["end"] <= chop["start"] + 0.15:
-                    chop["end"] = chop["start"] + 0.15
+            chop["start"] = max(0, chop["orig_start"] + start_trim)
+            chop["end"] = min(duration, chop["orig_end"] + end_trim)
+            if chop["end"] <= chop["start"] + 0.15:
+                chop["end"] = chop["start"] + 0.15
 
-                if st.button("Clean loop", key=f"clean_{chop['id']}"):
-                    chop["start"] = snap_to_nearest_beat(chop["start"], beat_times)
-                    chop["end"] = snap_to_nearest_beat(chop["end"], beat_times)
-                    chop["crossfade"] = max(chop["crossfade"], 18)
-                    chop["fade_in"] = max(chop["fade_in"], 8)
-                    chop["fade_out"] = max(chop["fade_out"], 8)
-                    st.rerun()
-
-                chop["humanize"] = st.checkbox("Humanize start", value=chop["humanize"], key=f"hum_{chop['id']}")
-
-                st.markdown("**Quick pitch**")
-                qp1, qp2, qp3, qp4, qp5, qp6 = st.columns(6)
-                if qp1.button("-7", key=f"p-7_{chop['id']}"):
-                    chop["pitch"] = -7
-                    st.rerun()
-                if qp2.button("-5", key=f"p-5_{chop['id']}"):
-                    chop["pitch"] = -5
-                    st.rerun()
-                if qp3.button("-3", key=f"p-3_{chop['id']}"):
-                    chop["pitch"] = -3
-                    st.rerun()
-                if qp4.button("+3", key=f"p+3_{chop['id']}"):
-                    chop["pitch"] = 3
-                    st.rerun()
-                if qp5.button("+5", key=f"p+5_{chop['id']}"):
-                    chop["pitch"] = 5
-                    st.rerun()
-                if qp6.button("+7", key=f"p+7_{chop['id']}"):
-                    chop["pitch"] = 7
-                    st.rerun()
-
-                c1, c2, c3 = st.columns(3)
+            # Everything else in a second expander
+            with st.expander("More", expanded=False):
+                c1, c2, c3, c4, c5, c6 = st.columns(6)
                 with c1:
-                    chop["pitch"] = st.slider("Pitch", -12, 12, chop["pitch"], key=f"pitch_{chop['id']}")
+                    chop["include"] = st.checkbox("Include", value=chop["include"], key=f"inc_{chop['id']}")
                 with c2:
-                    rev = st.checkbox("Reverse", value=chop["reverse"], key=f"rev_{chop['id']}")
-                    if rev != chop["reverse"]:
-                        chop["reverse"] = rev
-                        st.rerun()
+                    chop["locked"] = st.checkbox("Lock", value=chop["locked"], key=f"lock_{chop['id']}")
                 with c3:
+                    chop["solo"] = st.checkbox("Solo", value=chop["solo"], key=f"solo_{chop['id']}")
+                with c4:
+                    chop["mute"] = st.checkbox("Mute", value=chop["mute"], key=f"mute_{chop['id']}")
+                with c5:
+                    chop["favorite"] = st.checkbox("Favorite", value=chop["favorite"], key=f"fav_{chop['id']}")
+                with c6:
+                    chop["keep_original"] = st.checkbox("Keep original", value=chop["keep_original"], key=f"keeporig_{chop['id']}")
+
+                chop["group"] = st.text_input("Group", value=chop["group"], key=f"group_{chop['id']}", placeholder="verse / hook")
+
+                if st.button("Reset", key=f"reset_{chop['id']}"):
+                    chop["start"] = chop["orig_start"]
+                    chop["end"] = chop["orig_end"]
+                    chop["pitch"] = 0
+                    chop["reverse"] = False
+                    chop["style"] = "Clean"
+                    chop["eq"] = "None"
+                    chop["eq_amount"] = 0.7
+                    chop["fade_in"] = 6
+                    chop["fade_out"] = 6
+                    chop["crossfade"] = 12
+                    chop["volume"] = 1.0
+                    chop["swing"] = 0.0
+                    chop["humanize"] = False
+                    chop["keep_original"] = False
+                    st.rerun()
+
+                if not chop["locked"]:
+                    st.markdown("**Length**")
+                    l1, l2, l3 = st.columns(3)
+                    if l1.button("1 bar", key=f"bar1_{chop['id']}"):
+                        set_chop_bars(chop, 1, bpm, duration)
+                        st.rerun()
+                    if l2.button("2 bar", key=f"bar2_{chop['id']}"):
+                        set_chop_bars(chop, 2, bpm, duration)
+                        st.rerun()
+                    if l3.button("4 bar", key=f"bar4_{chop['id']}"):
+                        set_chop_bars(chop, 4, bpm, duration)
+                        st.rerun()
+
+                    if st.button("Clean loop", key=f"clean_{chop['id']}"):
+                        chop["start"] = snap_to_nearest_beat(chop["start"], beat_times)
+                        chop["end"] = snap_to_nearest_beat(chop["end"], beat_times)
+                        chop["crossfade"] = max(chop["crossfade"], 18)
+                        chop["fade_in"] = max(chop["fade_in"], 8)
+                        chop["fade_out"] = max(chop["fade_out"], 8)
+                        st.rerun()
+
+                    chop["humanize"] = st.checkbox("Humanize start", value=chop["humanize"], key=f"hum_{chop['id']}")
+
                     chop["style"] = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark"],
                                                  index=["Clean","Dusty","Warm","Dark"].index(chop["style"]),
                                                  key=f"style_{chop['id']}")
 
-                c4, c5 = st.columns(2)
-                with c4:
-                    chop["eq"] = st.selectbox("EQ / Filter", ["None", "Low shelf", "High shelf", "Low-pass", "High-pass"],
-                                              index=["None","Low shelf","High shelf","Low-pass","High-pass"].index(chop["eq"]),
-                                              key=f"eq_{chop['id']}")
-                with c5:
-                    if chop["eq"] != "None":
-                        chop["eq_amount"] = st.slider("Amount", 0.0, 1.0, chop["eq_amount"], 0.05, key=f"eqamt_{chop['id']}")
+                    c4, c5 = st.columns(2)
+                    with c4:
+                        chop["eq"] = st.selectbox("EQ / Filter", ["None", "Low shelf", "High shelf", "Low-pass", "High-pass"],
+                                                  index=["None","Low shelf","High shelf","Low-pass","High-pass"].index(chop["eq"]),
+                                                  key=f"eq_{chop['id']}")
+                    with c5:
+                        if chop["eq"] != "None":
+                            chop["eq_amount"] = st.slider("Amount", 0.0, 1.0, chop["eq_amount"], 0.05, key=f"eqamt_{chop['id']}")
 
-                c6, c7 = st.columns(2)
-                with c6:
-                    chop["fade_in"] = st.slider("Fade in", 0, 60, chop["fade_in"], 2, key=f"fi_{chop['id']}")
-                with c7:
-                    chop["fade_out"] = st.slider("Fade out", 0, 60, chop["fade_out"], 2, key=f"fo_{chop['id']}")
+                    c6, c7 = st.columns(2)
+                    with c6:
+                        chop["fade_in"] = st.slider("Fade in", 0, 60, chop["fade_in"], 2, key=f"fi_{chop['id']}")
+                    with c7:
+                        chop["fade_out"] = st.slider("Fade out", 0, 60, chop["fade_out"], 2, key=f"fo_{chop['id']}")
 
-                chop["volume"] = st.slider("Volume", 0.6, 1.4, chop["volume"], 0.05, key=f"vol_{chop['id']}")
-                chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
-                chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
+                    chop["volume"] = st.slider("Volume", 0.6, 1.4, chop["volume"], 0.05, key=f"vol_{chop['id']}")
+                    chop["crossfade"] = st.slider("Loop crossfade", 0, 60, chop["crossfade"], 2, key=f"cf_{chop['id']}")
+                    chop["swing"] = st.slider("Swing", 0.0, 1.0, chop["swing"], 0.05, key=f"swing_{chop['id']}")
 
             ctx_start = max(0, chop["start"] - 2.0)
             ctx_end = min(duration, chop["end"] + 2.0)
@@ -610,18 +642,6 @@ if uploaded:
             ba_path = os.path.join(out_dir, ba_name)
             sf.write(ba_path, ba, sr)
             before_after_files.append(ba_path)
-
-            loop_seg = do_reverse(seg, sr) if chop["reverse"] else seg
-            looped = apply_crossfade_loop(loop_seg, sr, chop["crossfade"])
-            loop_name = name.replace(".wav", "_loop.wav")
-            loop_path = os.path.join(out_dir, loop_name)
-            sf.write(loop_path, looped, sr)
-            if should_include:
-                included_files.append(loop_path)
-                if chop["favorite"]:
-                    fav_files.append(loop_path)
-            st.markdown("**Loop**")
-            st.audio(loop_path)
 
     if before_after_files:
         zpath = os.path.join(out_dir, "before_after.zip")
