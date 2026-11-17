@@ -67,7 +67,6 @@ def score_chop(y, sr, start, end):
     if len(seg) < 100:
         return 0.0
     rms = float(np.mean(np.abs(seg)))
-    # Prefer moderate energy
     balance = 1.0 - abs(rms - 0.12) * 3
     return max(0.0, rms * balance)
 
@@ -144,7 +143,6 @@ if uploaded:
     with st.spinner("Chopping the whole song..."):
         all_chops, bpm, beat_times = chop_whole_song(y_full, sr, bars=bars)
 
-    # Split into Best and Weird
     scored = sorted(all_chops, key=lambda x: x[3], reverse=True)
     best_chops = scored[:max(6, len(scored)//3)]
     weird_chops = [c for c in scored if c not in best_chops][:8]
@@ -156,14 +154,15 @@ if uploaded:
     loops_only = []
     hearted_files = []
 
-    def render_chop(start, end, i, label="Chop"):
+    def render_chop(start, end, i, label="Chop", tab="all"):
         chop_key = f"chop_{i}"
+        widget_key = f"{tab}_{i}"
         col1, col2 = st.columns([8, 1])
         with col1:
             st.markdown(f"**{label} {i}** · from {start:.1f}s")
         with col2:
             hearted = chop_key in st.session_state.hearted
-            if st.button("♥" if hearted else "♡", key=f"heart_{i}"):
+            if st.button("♥" if hearted else "♡", key=f"heart_{widget_key}"):
                 if hearted:
                     st.session_state.hearted.discard(chop_key)
                 else:
@@ -177,20 +176,20 @@ if uploaded:
         style = "Clean"
 
         with st.expander("Tweak this chop", expanded=False):
-            trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
-            trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{i}")
-            pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{i}")
-            rev = st.checkbox("Reverse", key=f"r_{i}")
-            style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{i}")
-            if st.button("Snap to beat", key=f"snap_{i}"):
-                st.session_state[f"snap_{i}"] = True
+            trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{widget_key}")
+            trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{widget_key}")
+            pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{widget_key}")
+            rev = st.checkbox("Reverse", key=f"r_{widget_key}")
+            style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape"], key=f"s_{widget_key}")
+            if st.button("Snap to beat", key=f"snap_{widget_key}"):
+                st.session_state[f"snap_{widget_key}"] = True
 
         adj_start = max(0, start + trim_start)
         adj_end = min(duration, end + trim_end)
         if adj_end <= adj_start + 0.2:
             adj_end = adj_start + 0.2
 
-        if st.session_state.get(f"snap_{i}", False):
+        if st.session_state.get(f"snap_{widget_key}", False):
             adj_start = snap_to_beat(adj_start, beat_times)
             adj_end = snap_to_beat(adj_end, beat_times)
             if adj_end <= adj_start + 0.2:
@@ -235,22 +234,22 @@ if uploaded:
         st.audio(loop_path)
         st.audio(tmp_path)
         with open(tmp_path, "rb") as f:
-            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
+            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{widget_key}")
 
     with tab_best:
         st.write(f"**{bpm:.1f} BPM** · {len(best_chops)} best chops")
         for start, end, i, score in best_chops:
-            render_chop(start, end, i, "Best")
+            render_chop(start, end, i, "Best", "best")
 
     with tab_weird:
         st.write(f"**{bpm:.1f} BPM** · {len(weird_chops)} weird chops")
         for start, end, i, score in weird_chops:
-            render_chop(start, end, i, "Weird")
+            render_chop(start, end, i, "Weird", "weird")
 
     with tab_all:
         st.write(f"**{bpm:.1f} BPM** · {len(all_chops)} chops")
         for start, end, i, score in all_chops:
-            render_chop(start, end, i, "Chop")
+            render_chop(start, end, i, "Chop", "all")
 
     with tab_oneshots:
         oneshots = extract_oneshots(y_full, sr)
