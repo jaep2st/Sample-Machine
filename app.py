@@ -9,7 +9,7 @@ import soundfile as sf
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
-st.caption("Beat-snapped · clean loops · working tweak")
+st.caption("Beat-snapped · clean loops · tweak stays with the chop")
 
 def process(seg, style):
     if style == "Dusty":
@@ -140,16 +140,14 @@ if uploaded:
         loops_only = []
 
         for start, end, i in chops:
-            st.markdown(f"**Chop {i}** · from {start:.1f}s")
+            with st.expander(f"Chop {i} · from {start:.1f}s", expanded=False):
+                # Default trim
+                trim_start = 0.0
+                trim_end = 0.0
+                pitch = 0
+                rev = False
+                style = "Clean"
 
-            # Default trim
-            trim_start = 0.0
-            trim_end = 0.0
-            pitch = 0
-            rev = False
-            style = "Clean"
-
-            with st.expander("Tweak", expanded=False):
                 trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{i}")
                 trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{i}")
                 pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{i}")
@@ -158,55 +156,55 @@ if uploaded:
                 if st.button("Snap to beat", key=f"snap_{i}"):
                     st.session_state[f"snap_{i}"] = True
 
-            adj_start = max(0, start + trim_start)
-            adj_end = min(duration, end + trim_end)
-            if adj_end <= adj_start + 0.2:
-                adj_end = adj_start + 0.2
+                adj_start = max(0, start + trim_start)
+                adj_end = min(duration, end + trim_end)
+                if adj_end <= adj_start + 0.2:
+                    adj_end = adj_start + 0.2
 
-            if st.session_state.get(f"snap_{i}", False):
+                if st.session_state.get(f"snap_{i}", False):
+                    adj_start = snap_to_beat(adj_start, beat_times)
+                    adj_end = snap_to_beat(adj_end, beat_times)
+                    if adj_end <= adj_start + 0.2:
+                        adj_end = adj_start + (bars * 4 * 60) / bpm
+
                 adj_start = snap_to_beat(adj_start, beat_times)
                 adj_end = snap_to_beat(adj_end, beat_times)
                 if adj_end <= adj_start + 0.2:
                     adj_end = adj_start + (bars * 4 * 60) / bpm
 
-            adj_start = snap_to_beat(adj_start, beat_times)
-            adj_end = snap_to_beat(adj_end, beat_times)
-            if adj_end <= adj_start + 0.2:
-                adj_end = adj_start + (bars * 4 * 60) / bpm
+                seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
 
-            seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
+                # Apply pitch, reverse, style
+                if pitch != 0:
+                    seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+                if rev:
+                    seg = do_reverse(seg, sr)
+                seg = process(seg, style)
+                seg = norm(seg)
 
-            # Apply pitch, reverse, style
-            if pitch != 0:
-                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
-            if rev:
-                seg = do_reverse(seg, sr)
-            seg = process(seg, style)
-            seg = norm(seg)
+                name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s"
+                if pitch != 0:
+                    name += f"_p{pitch:+d}"
+                if rev:
+                    name += "_rev"
+                if style != "Clean":
+                    name += f"_{style.lower()}"
+                name += ".wav"
 
-            name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s"
-            if pitch != 0:
-                name += f"_p{pitch:+d}"
-            if rev:
-                name += "_rev"
-            if style != "Clean":
-                name += f"_{style.lower()}"
-            name += ".wav"
+                tmp_path = os.path.join(out_dir, name)
+                sf.write(tmp_path, seg, sr)
+                included.append(tmp_path)
 
-            tmp_path = os.path.join(out_dir, name)
-            sf.write(tmp_path, seg, sr)
-            included.append(tmp_path)
+                # Loop first
+                looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
+                loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
+                sf.write(loop_path, looped, sr)
+                loops_only.append(loop_path)
 
-            # Loop first
-            looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
-            loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
-            sf.write(loop_path, looped, sr)
-            loops_only.append(loop_path)
-
-            st.audio(loop_path)
-            st.audio(tmp_path)
-            with open(tmp_path, "rb") as f:
-                st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
+                st.audio(loop_path)
+                st.audio(tmp_path)
+                with open(tmp_path, "rb") as f:
+                    st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{i}")
 
         if loops_only:
             zpath = os.path.join(out_dir, "loops_only.zip")
