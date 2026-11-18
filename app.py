@@ -11,43 +11,37 @@ st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="center
 st.title("Sample Machine")
 st.caption("Best · Weird · All · One-shots")
 
+KEYS = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
+
 def process(seg, style):
     if len(seg) < 100:
         return seg
     if style == "Dusty":
-        # Light vinyl noise + gentle roll-off
         seg = np.convolve(seg, np.ones(16)/16, mode="same")
         seg = np.tanh(seg * 1.35) * 0.84
     elif style == "Warm":
-        # Soft saturation, slight low boost
         low = np.convolve(seg, np.ones(7)/7, mode="same")
         seg = seg * 0.7 + low * 0.4
         seg = np.tanh(seg * 1.1) * 0.95
     elif style == "Dark":
-        # Heavy low-pass, quieter
         seg = np.convolve(seg, np.ones(32)/32, mode="same")
         seg = seg * 0.6
     elif style == "Tape":
-        # Tape saturation + light compression feel
         seg = np.convolve(seg, np.ones(8)/8, mode="same")
         seg = np.tanh(seg * 1.28) * 0.87
     elif style == "Crushed":
-        # Bit-crush-ish, hard clip
         seg = np.round(seg * 12) / 12
         seg = np.clip(seg * 1.4, -0.95, 0.95)
     elif style == "Filtered":
-        # Band-pass feel
         low = np.convolve(seg, np.ones(20)/20, mode="same")
         high = seg - np.convolve(seg, np.ones(4)/4, mode="same")
         seg = low * 0.5 + high * 0.6
         seg = np.tanh(seg * 1.15) * 0.9
     elif style == "Lo-fi":
-        # Soft roll-off + light noise
         seg = np.convolve(seg, np.ones(12)/12, mode="same")
         noise = np.random.uniform(-0.008, 0.008, len(seg))
         seg = np.tanh((seg + noise) * 1.2) * 0.86
     elif style == "Chorus":
-        # Slight detune feel
         delay = int(0.012 * 44100)
         delayed = np.pad(seg, (delay, 0))[:len(seg)]
         seg = seg * 0.7 + delayed * 0.35
@@ -86,7 +80,10 @@ def norm(seg, gain=1.0):
 def detect_key(y, sr):
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
     key_idx = int(np.argmax(np.mean(chroma, axis=1)))
-    return ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][key_idx]
+    return KEYS[key_idx], key_idx
+
+def shift_key(key_idx, semitones):
+    return KEYS[(key_idx + semitones) % 12]
 
 def snap_to_beat(time, beat_times):
     if len(beat_times) == 0:
@@ -165,7 +162,7 @@ if uploaded:
         st.stop()
 
     duration = len(y_full) / sr
-    key = detect_key(y_full, sr)
+    key, key_idx = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
 
     bar_choice = st.radio("Bar length", ["2 bars", "4 bars", "8 bars", "16 bars"], index=0, horizontal=True)
@@ -224,14 +221,18 @@ if uploaded:
         if len(seg) < 100:
             seg = np.zeros(int(sr * 0.5))
 
+        # Pitch changes key, keeps BPM
+        new_key = key
         if pitch != 0 and len(seg) > 100:
-            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch, bins_per_octave=24)
+            new_key = shift_key(key_idx, pitch)
+
         if rev and len(seg) > 0:
             seg = do_reverse(seg, sr)
         seg = process(seg, style)
         seg = norm(seg)
 
-        name = f"{int(bpm)}bpm_{key}_chop{i:02d}_{adj_start:.1f}s"
+        name = f"{int(bpm)}bpm_{new_key}_chop{i:02d}_{adj_start:.1f}s"
         if pitch != 0:
             name += f"_p{pitch:+d}"
         if rev:
