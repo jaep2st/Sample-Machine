@@ -164,14 +164,15 @@ def extract_oneshots(y, sr, max_shots=12):
     shots.sort(key=lambda x: x[2], reverse=True)
     return shots[:max_shots]
 
-def make_waveform_image(y, sr, start, end, width=600, height=36):
-    # Downsample heavily for speed
-    hop = max(1, len(y) // 800)
+@st.cache_data(show_spinner=False)
+def make_waveform_image(y_bytes, sr, start, end, width=500, height=28):
+    y = np.frombuffer(y_bytes, dtype=np.float32)
+    hop = max(1, len(y) // 600)
     ys = y[::hop]
     t = np.linspace(0, len(y)/sr, len(ys))
-    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=100)
-    ax.plot(t, ys, color="#888888", linewidth=0.4)
-    ax.axvspan(start, end, color="#4CAF50", alpha=0.35)
+    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=80)
+    ax.plot(t, ys, color="#888888", linewidth=0.3)
+    ax.axvspan(start, end, color="#4CAF50", alpha=0.4)
     ax.set_xlim(0, len(y)/sr)
     ax.set_ylim(-1, 1)
     ax.axis("off")
@@ -215,6 +216,9 @@ if uploaded:
     best_chops = scored[:max(6, len(scored)//3)]
     weird_chops = [c for c in scored if c not in best_chops][:8]
 
+    # Cache the waveform bytes once
+    y_bytes = y_full.astype(np.float32).tobytes()
+
     tab_best, tab_weird, tab_all, tab_oneshots = st.tabs(["Best", "Weird", "All", "One-shots"])
 
     out_dir = tempfile.mkdtemp()
@@ -237,9 +241,8 @@ if uploaded:
                     st.session_state.hearted.add(chop_key)
                 st.rerun()
 
-        # Thin waveform with highlight
         try:
-            img = make_waveform_image(y_full, sr, start, end)
+            img = make_waveform_image(y_bytes, sr, start, end)
             st.image(img, use_container_width=True)
         except Exception:
             pass
@@ -347,9 +350,8 @@ if uploaded:
                         st.session_state.hearted.add(os_key)
                     st.rerun()
 
-            # Thin waveform for one-shot
             try:
-                img = make_waveform_image(y_full, sr, onset, onset + length)
+                img = make_waveform_image(y_bytes, sr, onset, onset + length)
                 st.image(img, use_container_width=True)
             except Exception:
                 pass
