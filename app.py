@@ -255,7 +255,7 @@ if uploaded:
         wk = f"{tab}_{i}"
         col1, col2 = st.columns([8, 1])
         with col1:
-            st.markdown(f"**{label} {i}** · from {start:.1f}s")
+            st.markdown(f"**{label} {i}** · {int(bpm)} BPM · {key} · {start:.1f}s")
         with col2:
             hearted = chop_key in st.session_state.hearted
             if st.button("♥" if hearted else "♡", key=f"heart_{wk}"):
@@ -277,12 +277,14 @@ if uploaded:
         pitch = 0
         rev = False
         style = "Clean"
+        new_bpm = int(bpm)
 
         with st.expander("Tweak this chop", expanded=False):
             shift = st.slider("Shift whole chop", -2.0, 2.0, 0.0, 0.05, key=f"shift_{wk}")
             trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{wk}")
             trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{wk}")
             pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{wk}")
+            new_bpm = st.slider("BPM", max(40, int(bpm)-40), min(200, int(bpm)+40), int(bpm), key=f"bpm_{wk}")
             rev = st.checkbox("Reverse", key=f"r_{wk}")
             style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape", "Crushed", "Filtered", "Lo-fi", "Chorus"], key=f"s_{wk}")
 
@@ -303,12 +305,19 @@ if uploaded:
             except Exception:
                 pass
 
+        if new_bpm != int(bpm) and len(seg) > 100:
+            try:
+                rate = bpm / new_bpm
+                seg = librosa.effects.time_stretch(seg, rate=rate)
+            except Exception:
+                pass
+
         if rev and len(seg) > 0:
             seg = do_reverse(seg, sr)
         seg = process(seg, style)
         seg = norm(seg)
 
-        name = f"{int(bpm)}bpm_{new_key.replace(' ', '_')}_chop{i:02d}_{adj_start:.1f}s"
+        name = f"{new_bpm}bpm_{new_key.replace(' ', '_')}_chop{i:02d}_{adj_start:.1f}s"
         if pitch != 0:
             name += f"_p{pitch:+d}"
         if rev:
@@ -317,9 +326,13 @@ if uploaded:
             name += f"_{style.lower()}"
         name += ".wav"
 
-        # Show the new key under the chop when pitched
-        if pitch != 0:
-            st.caption(f"Pitched to **{new_key}**")
+        if pitch != 0 or new_bpm != int(bpm):
+            changes = []
+            if pitch != 0:
+                changes.append(f"**{new_key}**")
+            if new_bpm != int(bpm):
+                changes.append(f"**{new_bpm} BPM**")
+            st.caption(" · ".join(changes))
 
         tmp_path = os.path.join(out_dir, name)
         try:
@@ -368,7 +381,7 @@ if uploaded:
             os_key = f"os_{i}"
             col1, col2 = st.columns([8, 1])
             with col1:
-                st.markdown(f"**One-shot {i}** · from {onset:.1f}s · {length:.2f}s")
+                st.markdown(f"**One-shot {i}** · {int(bpm)} BPM · {key} · {onset:.1f}s")
             with col2:
                 hearted = os_key in st.session_state.hearted
                 if st.button("♥" if hearted else "♡", key=f"heartos_{i}"):
