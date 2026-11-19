@@ -300,7 +300,8 @@ if uploaded:
         new_key = key
         if pitch != 0 and len(seg) > 100:
             try:
-                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+                # Higher quality pitch shift
+                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch, bins_per_octave=36)
                 new_key = shift_key_name(key, pitch)
             except Exception:
                 pass
