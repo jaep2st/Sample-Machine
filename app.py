@@ -90,13 +90,28 @@ def snap_to_beat(time, beat_times):
         return time
     return beat_times[np.argmin(np.abs(beat_times - time))]
 
-def score_chop(y, sr, start, end):
+def score_chop(y, sr, start, end, song_len):
     seg = y[int(start*sr):int(end*sr)]
     if len(seg) < 100:
         return 0.0
+    # Energy
     rms = float(np.mean(np.abs(seg)))
-    balance = 1.0 - abs(rms - 0.12) * 3
-    return max(0.0, rms * balance)
+    # Prefer moderate energy
+    energy_score = 1.0 - abs(rms - 0.11) * 4
+    energy_score = max(0.0, energy_score)
+    # Transient strength (more musical)
+    diff = np.abs(np.diff(seg))
+    transient = float(np.mean(diff[:min(len(diff), int(0.1*sr))]))
+    transient_score = min(1.0, transient * 8)
+    # Prefer earlier in the song
+    position_score = 1.0 - (start / song_len) * 0.4
+    # Prefer chops that start close to a downbeat feel
+    start_sample = int(start * sr)
+    window = y[max(0, start_sample-int(0.05*sr)):start_sample+int(0.1*sr)]
+    onset_strength = float(np.mean(np.abs(window))) if len(window) else 0
+    onset_score = min(1.0, onset_strength * 3)
+    score = (energy_score * 0.4) + (transient_score * 0.25) + (position_score * 0.2) + (onset_score * 0.15)
+    return max(0.0, score)
 
 def chop_whole_song(y, sr, bars=2):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
@@ -112,7 +127,7 @@ def chop_whole_song(y, sr, bars=2):
         end = snap_to_beat(start + bar_len, beat_times)
         if end <= start + 0.2:
             end = start + bar_len
-        score = score_chop(y, sr, start, end)
+        score = score_chop(y, sr, start, end, song_len)
         chops.append((start, end, i, score))
         start = end
         i += 1
@@ -221,10 +236,9 @@ if uploaded:
         if len(seg) < 100:
             seg = np.zeros(int(sr * 0.5))
 
-        # Pitch changes key, keeps BPM
         new_key = key
         if pitch != 0 and len(seg) > 100:
-            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch, bins_per_octave=24)
+            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
             new_key = shift_key(key_idx, pitch)
 
         if rev and len(seg) > 0:
