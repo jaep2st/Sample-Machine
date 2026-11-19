@@ -192,11 +192,11 @@ def extract_oneshots(y, sr, max_shots=12):
 @st.cache_data(show_spinner=False)
 def make_waveform_image(y_bytes, sr, start, end, width=500, height=28):
     y = np.frombuffer(y_bytes, dtype=np.float32)
-    hop = max(1, len(y) // 600)
+    hop = max(1, len(y) // 500)
     ys = y[::hop]
     t = np.linspace(0, len(y)/sr, len(ys))
-    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=80)
-    ax.plot(t, ys, color="#888888", linewidth=0.3)
+    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=70)
+    ax.plot(t, ys, color="#888888", linewidth=0.25)
     ax.axvspan(start, end, color="#4CAF50", alpha=0.4)
     ax.set_xlim(0, len(y)/sr)
     ax.set_ylim(-1, 1)
