@@ -6,6 +6,10 @@ from pathlib import Path
 import numpy as np
 import librosa
 import soundfile as sf
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from io import BytesIO
 
 st.set_page_config(page_title="Sample Machine", page_icon="🎧", layout="centered")
 st.title("Sample Machine")
@@ -51,7 +55,6 @@ def process(seg, style):
 def apply_crossfade_loop(seg, sr, crossfade_ms=18):
     if len(seg) < sr * 0.1:
         return np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5))
-    # Find a zero-crossing near the end for cleaner join
     end_window = int(0.015 * sr)
     end_window = min(end_window, len(seg)//4)
     tail = seg[-end_window:]
@@ -124,7 +127,6 @@ def chop_whole_song(y, sr, bars=2):
     beat_times = librosa.frames_to_time(beats, sr=sr)
     song_len = len(y) / sr
     bar_len = (bars * 4 * 60) / bpm
-    
     start = snap_to_beat(0.5, beat_times)
     chops = []
     i = 1
@@ -161,6 +163,24 @@ def extract_oneshots(y, sr, max_shots=12):
             shots.append((onset, length, hit_energy * peak))
     shots.sort(key=lambda x: x[2], reverse=True)
     return shots[:max_shots]
+
+def make_waveform_image(y, sr, start, end, width=600, height=36):
+    # Downsample heavily for speed
+    hop = max(1, len(y) // 800)
+    ys = y[::hop]
+    t = np.linspace(0, len(y)/sr, len(ys))
+    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=100)
+    ax.plot(t, ys, color="#888888", linewidth=0.4)
+    ax.axvspan(start, end, color="#4CAF50", alpha=0.35)
+    ax.set_xlim(0, len(y)/sr)
+    ax.set_ylim(-1, 1)
+    ax.axis("off")
+    fig.tight_layout(pad=0)
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0, transparent=True)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 if "hearted" not in st.session_state:
     st.session_state.hearted = set()
@@ -216,6 +236,13 @@ if uploaded:
                 else:
                     st.session_state.hearted.add(chop_key)
                 st.rerun()
+
+        # Thin waveform with highlight
+        try:
+            img = make_waveform_image(y_full, sr, start, end)
+            st.image(img, use_container_width=True)
+        except Exception:
+            pass
 
         shift = 0.0
         trim_start = 0.0
@@ -319,6 +346,13 @@ if uploaded:
                     else:
                         st.session_state.hearted.add(os_key)
                     st.rerun()
+
+            # Thin waveform for one-shot
+            try:
+                img = make_waveform_image(y_full, sr, onset, onset + length)
+                st.image(img, use_container_width=True)
+            except Exception:
+                pass
 
             window = y_full[int(onset*sr):int((onset+length)*sr)].copy()
             window = norm(window)
