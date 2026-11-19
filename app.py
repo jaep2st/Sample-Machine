@@ -48,11 +48,21 @@ def process(seg, style):
         seg = np.tanh(seg * 1.05) * 0.93
     return seg
 
-def apply_crossfade_loop(seg, sr, crossfade_ms=25):
-    if len(seg) < 100:
+def apply_crossfade_loop(seg, sr, crossfade_ms=18):
+    if len(seg) < sr * 0.1:
         return np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5))
+    # Find a zero-crossing near the end for cleaner join
+    end_window = int(0.015 * sr)
+    end_window = min(end_window, len(seg)//4)
+    tail = seg[-end_window:]
+    zc = np.where(np.diff(np.sign(tail)))[0]
+    if len(zc) > 0:
+        cut = len(seg) - end_window + zc[-1]
+        seg = seg[:cut]
+    if len(seg) < 100:
+        return np.tile(seg, 4)
     cf = int(crossfade_ms / 1000 * sr)
-    cf = min(cf, max(1, len(seg)//6))
+    cf = min(cf, max(1, len(seg)//8))
     fade_out = np.linspace(1, 0, cf)
     fade_in = np.linspace(0, 1, cf)
     looped = []
@@ -94,18 +104,13 @@ def score_chop(y, sr, start, end, song_len):
     seg = y[int(start*sr):int(end*sr)]
     if len(seg) < 100:
         return 0.0
-    # Energy
     rms = float(np.mean(np.abs(seg)))
-    # Prefer moderate energy
     energy_score = 1.0 - abs(rms - 0.11) * 4
     energy_score = max(0.0, energy_score)
-    # Transient strength (more musical)
     diff = np.abs(np.diff(seg))
     transient = float(np.mean(diff[:min(len(diff), int(0.1*sr))]))
     transient_score = min(1.0, transient * 8)
-    # Prefer earlier in the song
     position_score = 1.0 - (start / song_len) * 0.4
-    # Prefer chops that start close to a downbeat feel
     start_sample = int(start * sr)
     window = y[max(0, start_sample-int(0.05*sr)):start_sample+int(0.1*sr)]
     onset_strength = float(np.mean(np.abs(window))) if len(window) else 0
@@ -229,8 +234,8 @@ if uploaded:
 
         raw_start = start + shift + trim_start
         raw_end = end + shift + trim_end
-        adj_start = max(0.0, min(raw_start, duration - 0.3))
-        adj_end = max(adj_start + 0.3, min(raw_end, duration))
+        adj_start = max(0.0, min(raw_start, duration - 0.25))
+        adj_end = max(adj_start + 0.25, min(raw_end, duration))
 
         seg = y_full[int(adj_start*sr):int(adj_end*sr)].copy()
         if len(seg) < 100:
@@ -238,8 +243,11 @@ if uploaded:
 
         new_key = key
         if pitch != 0 and len(seg) > 100:
-            seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
-            new_key = shift_key(key_idx, pitch)
+            try:
+                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
+                new_key = shift_key(key_idx, pitch)
+            except Exception:
+                pass
 
         if rev and len(seg) > 0:
             seg = do_reverse(seg, sr)
@@ -264,7 +272,7 @@ if uploaded:
         if chop_key in st.session_state.hearted:
             hearted_files.append(tmp_path)
 
-        looped = apply_crossfade_loop(seg, sr, crossfade_ms=25)
+        looped = apply_crossfade_loop(seg, sr, crossfade_ms=18)
         loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
         try:
             sf.write(loop_path, looped, sr)
