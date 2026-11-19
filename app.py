@@ -92,11 +92,36 @@ def norm(seg, gain=1.0):
 
 def detect_key(y, sr):
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-    key_idx = int(np.argmax(np.mean(chroma, axis=1)))
-    return KEYS[key_idx], key_idx
+    mean_chroma = np.mean(chroma, axis=1)
+    major_template = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+    minor_template = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+    best_score = -1
+    best_key = "C"
+    best_mode = "major"
+    for i in range(12):
+        rotated_major = np.roll(major_template, i)
+        rotated_minor = np.roll(minor_template, i)
+        major_score = np.dot(mean_chroma, rotated_major)
+        minor_score = np.dot(mean_chroma, rotated_minor)
+        if major_score > best_score:
+            best_score = major_score
+            best_key = KEYS[i]
+            best_mode = "major"
+        if minor_score > best_score:
+            best_score = minor_score
+            best_key = KEYS[i]
+            best_mode = "minor"
+    return f"{best_key} {best_mode}", KEYS.index(best_key)
 
-def shift_key(key_idx, semitones):
-    return KEYS[(key_idx + semitones) % 12]
+def shift_key_name(key_str, semitones):
+    if semitones == 0:
+        return key_str
+    parts = key_str.split()
+    root = parts[0]
+    mode = parts[1] if len(parts) > 1 else "major"
+    idx = KEYS.index(root)
+    new_idx = (idx + semitones) % 12
+    return f"{KEYS[new_idx]} {mode}"
 
 def snap_to_beat(time, beat_times):
     if len(beat_times) == 0:
@@ -216,7 +241,6 @@ if uploaded:
     best_chops = scored[:max(6, len(scored)//3)]
     weird_chops = [c for c in scored if c not in best_chops][:8]
 
-    # Cache the waveform bytes once
     y_bytes = y_full.astype(np.float32).tobytes()
 
     tab_best, tab_weird, tab_all, tab_oneshots = st.tabs(["Best", "Weird", "All", "One-shots"])
@@ -275,7 +299,7 @@ if uploaded:
         if pitch != 0 and len(seg) > 100:
             try:
                 seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch)
-                new_key = shift_key(key_idx, pitch)
+                new_key = shift_key_name(key, pitch)
             except Exception:
                 pass
 
@@ -284,7 +308,7 @@ if uploaded:
         seg = process(seg, style)
         seg = norm(seg)
 
-        name = f"{int(bpm)}bpm_{new_key}_chop{i:02d}_{adj_start:.1f}s"
+        name = f"{int(bpm)}bpm_{new_key.replace(' ', '_')}_chop{i:02d}_{adj_start:.1f}s"
         if pitch != 0:
             name += f"_p{pitch:+d}"
         if rev:
@@ -292,6 +316,10 @@ if uploaded:
         if style != "Clean":
             name += f"_{style.lower()}"
         name += ".wav"
+
+        # Show the new key under the chop when pitched
+        if pitch != 0:
+            st.caption(f"Pitched to **{new_key}**")
 
         tmp_path = os.path.join(out_dir, name)
         try:
@@ -358,7 +386,7 @@ if uploaded:
 
             window = y_full[int(onset*sr):int((onset+length)*sr)].copy()
             window = norm(window)
-            os_name = f"{int(bpm)}bpm_{key}_oneshot{i:02d}_{onset:.1f}s.wav"
+            os_name = f"{int(bpm)}bpm_{key.replace(' ', '_')}_oneshot{i:02d}_{onset:.1f}s.wav"
             os_path = os.path.join(out_dir, os_name)
             try:
                 sf.write(os_path, window, sr)
