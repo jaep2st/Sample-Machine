@@ -89,21 +89,22 @@ def process(seg, style):
         seg = np.tanh(seg * 1.05) * 0.93
     return seg
 
-def apply_crossfade_loop(seg, sr, crossfade_ms=12):
-    if len(seg) < sr * 0.08:
+def apply_crossfade_loop(seg, sr, crossfade_ms=10):
+    if len(seg) < sr * 0.06:
         return np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5))
-    search = int(0.02 * sr)
-    search = min(search, len(seg)//5)
+    # Find clean zero-crossing near end
+    search = int(0.015 * sr)
+    search = min(search, len(seg)//6)
     tail = seg[-search:]
     zc = np.where(np.diff(np.sign(tail)))[0]
     if len(zc) > 0:
         cut = len(seg) - search + zc[-1]
-        if cut > len(seg) * 0.7:
+        if cut > len(seg) * 0.75:
             seg = seg[:cut]
-    if len(seg) < 100:
+    if len(seg) < 80:
         return np.tile(seg, 4)
     cf = int(crossfade_ms / 1000 * sr)
-    cf = min(cf, max(1, len(seg)//10))
+    cf = min(cf, max(1, len(seg)//12))
     fade_out = np.linspace(1, 0, cf)
     fade_in = np.linspace(0, 1, cf)
     looped = []
@@ -187,16 +188,18 @@ def score_chop(y, sr, start, end, song_len):
 def estimate_bpm(y, sr):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, start_bpm=100)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
-    if bpm < 50 or bpm > 180:
-        tempo2, _ = librosa.beat.beat_track(y=y, sr=sr, start_bpm=120)
+    # Second pass if extreme
+    if bpm < 55 or bpm > 170:
+        tempo2, _ = librosa.beat.beat_track(y=y, sr=sr, start_bpm=110)
         bpm2 = float(tempo2) if np.isscalar(tempo2) else float(tempo2[0])
-        if 60 <= bpm2 <= 160:
+        if 65 <= bpm2 <= 155:
             bpm = bpm2
-    if bpm > 140:
-        bpm = bpm / 2
-    elif bpm < 70:
-        bpm = bpm * 2
-    return max(60.0, min(180.0, bpm)), beats
+    # Correct common half/double
+    if bpm > 145:
+        bpm = bpm / 2.0
+    elif bpm < 72:
+        bpm = bpm * 2.0
+    return max(65.0, min(170.0, bpm)), beats
 
 def chop_whole_song(y, sr, bars=2):
     bpm, beats = estimate_bpm(y, sr)
@@ -206,7 +209,8 @@ def chop_whole_song(y, sr, bars=2):
     start = snap_to_beat(0.5, beat_times)
     chops = []
     i = 1
-    while start + bar_len < song_len - 0.1:
+    max_chops = 80  # guard against runaway on long tracks
+    while start + bar_len < song_len - 0.1 and i <= max_chops:
         end = snap_to_beat(start + bar_len, beat_times)
         if end <= start + 0.2:
             end = start + bar_len
@@ -316,6 +320,11 @@ if uploaded:
         st.stop()
 
     duration = len(y_full) / sr
+    if duration > 600:
+        st.warning("Track is over 10 minutes. Only the first 10 minutes will be chopped.")
+        y_full = y_full[:int(600 * sr)]
+        duration = 600.0
+
     key, key_idx = detect_key(y_full, sr)
     st.write(f"Track length: {duration:.1f}s · **{key}**")
 
@@ -437,7 +446,7 @@ if uploaded:
         if heart_tuple in st.session_state.hearted:
             hearted_files.append((tmp_path, name, track_name))
 
-        looped = apply_crossfade_loop(seg, sr, crossfade_ms=12)
+        looped = apply_crossfade_loop(seg, sr, crossfade_ms=10)
         loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
         try:
             sf.write(loop_path, looped, sr)
