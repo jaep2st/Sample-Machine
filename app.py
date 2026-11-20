@@ -92,7 +92,6 @@ def process(seg, style):
 def apply_crossfade_loop(seg, sr, crossfade_ms=12):
     if len(seg) < sr * 0.08:
         return np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5))
-    # Prefer zero-crossing near the end
     search = int(0.02 * sr)
     search = min(search, len(seg)//5)
     tail = seg[-search:]
@@ -186,16 +185,13 @@ def score_chop(y, sr, start, end, song_len):
     return max(0.0, score)
 
 def estimate_bpm(y, sr):
-    # Primary method
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, start_bpm=100)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
-    # Fallback if BPM is extreme
     if bpm < 50 or bpm > 180:
         tempo2, _ = librosa.beat.beat_track(y=y, sr=sr, start_bpm=120)
         bpm2 = float(tempo2) if np.isscalar(tempo2) else float(tempo2[0])
         if 60 <= bpm2 <= 160:
             bpm = bpm2
-    # Half/double correction for common doubling
     if bpm > 140:
         bpm = bpm / 2
     elif bpm < 70:
@@ -334,12 +330,13 @@ if uploaded:
 
     y_bytes = y_full.astype(np.float32).tobytes()
 
-    tab_best, tab_weird, tab_all, tab_oneshots = st.tabs(["Best", "Weird", "All", "One-shots"])
+    tab_best, tab_weird, tab_all, tab_oneshots, tab_fav = st.tabs(["Best", "Weird", "All", "One-shots", "Favorites"])
 
     out_dir = tempfile.mkdtemp()
     included = []
     loops_only = []
     hearted_files = []
+    fav_items = []
 
     def render_chop(start, end, i, label="Chop", tab="all"):
         chop_key = f"chop_{i}"
@@ -438,6 +435,7 @@ if uploaded:
         included.append(tmp_path)
         if chop_key in st.session_state.hearted:
             hearted_files.append(tmp_path)
+            fav_items.append((tmp_path, name, loop_path if 'loop_path' in dir() else None))
 
         looped = apply_crossfade_loop(seg, sr, crossfade_ms=12)
         loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
@@ -531,6 +529,22 @@ if uploaded:
                     zf.write(fpath, Path(fpath).name)
             with open(zpath, "rb") as f:
                 st.download_button("Download All One-shots", f, file_name="oneshots.zip", key="allos")
+
+    with tab_fav:
+        if not hearted_files:
+            st.write("No favorites yet. Heart a chop and it will show here.")
+        else:
+            st.write(f"{len(set(hearted_files))} favorites from this track")
+            shown = set()
+            for fpath in hearted_files:
+                name = Path(fpath).name
+                if name in shown or "_loop" in name:
+                    continue
+                shown.add(name)
+                st.markdown(f"**{name}**")
+                st.audio(fpath)
+                with open(fpath, "rb") as f:
+                    st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"favdl_{name}")
 
     if hearted_files:
         zpath = os.path.join(out_dir, "favorites.zip")
