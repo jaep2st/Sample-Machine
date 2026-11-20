@@ -92,7 +92,6 @@ def process(seg, style):
 def apply_crossfade_loop(seg, sr, crossfade_ms=10):
     if len(seg) < sr * 0.06:
         return np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5))
-    # Find clean zero-crossing near end
     search = int(0.015 * sr)
     search = min(search, len(seg)//6)
     tail = seg[-search:]
@@ -188,13 +187,11 @@ def score_chop(y, sr, start, end, song_len):
 def estimate_bpm(y, sr):
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, start_bpm=100)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
-    # Second pass if extreme
     if bpm < 55 or bpm > 170:
         tempo2, _ = librosa.beat.beat_track(y=y, sr=sr, start_bpm=110)
         bpm2 = float(tempo2) if np.isscalar(tempo2) else float(tempo2[0])
         if 65 <= bpm2 <= 155:
             bpm = bpm2
-    # Correct common half/double
     if bpm > 145:
         bpm = bpm / 2.0
     elif bpm < 72:
@@ -209,7 +206,7 @@ def chop_whole_song(y, sr, bars=2):
     start = snap_to_beat(0.5, beat_times)
     chops = []
     i = 1
-    max_chops = 80  # guard against runaway on long tracks
+    max_chops = 80
     while start + bar_len < song_len - 0.1 and i <= max_chops:
         end = snap_to_beat(start + bar_len, beat_times)
         if end <= start + 0.2:
@@ -403,7 +400,12 @@ if uploaded:
         new_key = key
         if pitch != 0 and len(seg) > 100:
             try:
-                seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch, bins_per_octave=36)
+                # Higher quality pitch shift
+                seg = librosa.effects.pitch_shift(
+                    seg, sr=sr, n_steps=pitch, 
+                    bins_per_octave=48, 
+                    res_type="kaiser_best"
+                )
                 new_key = shift_key_name(key, pitch)
             except Exception:
                 pass
