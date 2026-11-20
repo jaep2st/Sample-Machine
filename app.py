@@ -196,7 +196,8 @@ def estimate_bpm(y, sr):
         bpm = bpm / 2.0
     elif bpm < 72:
         bpm = bpm * 2.0
-    return max(65.0, min(170.0, bpm)), beats
+    bpm = round(bpm)  # round to whole number
+    return max(65, min(170, int(bpm))), beats
 
 def chop_whole_song(y, sr, bars=2):
     bpm, beats = estimate_bpm(y, sr)
@@ -350,7 +351,7 @@ if uploaded:
         wk = f"{tab}_{i}"
         col1, col2 = st.columns([8, 1])
         with col1:
-            st.markdown(f"**{label} {i}** · {int(bpm)} BPM · {key} · {start:.1f}s")
+            st.markdown(f"**{label} {i}** · {bpm} BPM · {key} · {start:.1f}s")
         with col2:
             hearted = heart_tuple in st.session_state.hearted
             if st.button("♥" if hearted else "♡", key=f"heart_{wk}"):
@@ -377,14 +378,14 @@ if uploaded:
         pitch = 0
         rev = False
         style = "Clean"
-        new_bpm = int(bpm)
+        new_bpm = bpm
 
         with st.expander("Tweak this chop", expanded=False):
             shift = st.slider("Shift whole chop", -2.0, 2.0, 0.0, 0.05, key=f"shift_{wk}")
             trim_start = st.slider("Trim start", -0.5, 0.5, 0.0, 0.01, key=f"ts_{wk}")
             trim_end = st.slider("Trim end", -0.5, 0.5, 0.0, 0.01, key=f"te_{wk}")
             pitch = st.slider("Pitch", -12, 12, 0, key=f"p_{wk}")
-            new_bpm = st.slider("BPM", max(40, int(bpm)-40), min(200, int(bpm)+40), int(bpm), key=f"bpm_{wk}")
+            new_bpm = st.slider("BPM", max(40, bpm-40), min(200, bpm+40), bpm, key=f"bpm_{wk}")
             rev = st.checkbox("Reverse", key=f"r_{wk}")
             style = st.selectbox("Style", ["Clean", "Dusty", "Warm", "Dark", "Tape", "Crushed", "Filtered", "Lo-fi", "Chorus"], key=f"s_{wk}")
 
@@ -400,7 +401,6 @@ if uploaded:
         new_key = key
         if pitch != 0 and len(seg) > 100:
             try:
-                # Higher quality pitch shift
                 seg = librosa.effects.pitch_shift(
                     seg, sr=sr, n_steps=pitch, 
                     bins_per_octave=48, 
@@ -410,7 +410,7 @@ if uploaded:
             except Exception:
                 pass
 
-        if new_bpm != int(bpm) and len(seg) > 100:
+        if new_bpm != bpm and len(seg) > 100:
             try:
                 rate = bpm / new_bpm
                 seg = librosa.effects.time_stretch(seg, rate=rate)
@@ -431,11 +431,11 @@ if uploaded:
             name += f"_{style.lower()}"
         name += ".wav"
 
-        if pitch != 0 or new_bpm != int(bpm):
+        if pitch != 0 or new_bpm != bpm:
             changes = []
             if pitch != 0:
                 changes.append(f"**{new_key}**")
-            if new_bpm != int(bpm):
+            if new_bpm != bpm:
                 changes.append(f"**{new_bpm} BPM**")
             st.caption(" · ".join(changes))
 
@@ -462,17 +462,17 @@ if uploaded:
             st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"dl_{wk}")
 
     with tab_best:
-        st.write(f"**{bpm:.1f} BPM** · {len(best_chops)} best chops")
+        st.write(f"**{bpm} BPM** · {len(best_chops)} best chops")
         for start, end, i, score in best_chops:
             render_chop(start, end, i, "Best", "best")
 
     with tab_weird:
-        st.write(f"**{bpm:.1f} BPM** · {len(weird_chops)} weird chops")
+        st.write(f"**{bpm} BPM** · {len(weird_chops)} weird chops")
         for start, end, i, score in weird_chops:
             render_chop(start, end, i, "Weird", "weird")
 
     with tab_all:
-        st.write(f"**{bpm:.1f} BPM** · {len(all_chops)} chops")
+        st.write(f"**{bpm} BPM** · {len(all_chops)} chops")
         for start, end, i, score in all_chops:
             render_chop(start, end, i, "Chop", "all")
 
@@ -485,7 +485,7 @@ if uploaded:
             heart_tuple = (os_key, track_name)
             col1, col2 = st.columns([8, 1])
             with col1:
-                st.markdown(f"**One-shot {i}** · {int(bpm)} BPM · {key} · {onset:.1f}s")
+                st.markdown(f"**One-shot {i}** · {bpm} BPM · {key} · {onset:.1f}s")
             with col2:
                 hearted = heart_tuple in st.session_state.hearted
                 if st.button("♥" if hearted else "♡", key=f"heartos_{i}"):
@@ -508,7 +508,7 @@ if uploaded:
 
             window = y_full[int(onset*sr):int((onset+length)*sr)].copy()
             window = norm(window)
-            os_name = f"{int(bpm)}bpm_{key.replace(' ', '_')}_oneshot{i:02d}_{onset:.1f}s.wav"
+            os_name = f"{bpm}bpm_{key.replace(' ', '_')}_oneshot{i:02d}_{onset:.1f}s.wav"
             os_path = os.path.join(out_dir, os_name)
             try:
                 sf.write(os_path, window, sr)
