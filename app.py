@@ -89,20 +89,22 @@ def process(seg, style):
         seg = np.tanh(seg * 1.05) * 0.93
     return seg
 
-def apply_crossfade_loop(seg, sr, crossfade_ms=18):
-    if len(seg) < sr * 0.1:
+def apply_crossfade_loop(seg, sr, crossfade_ms=12):
+    if len(seg) < sr * 0.08:
         return np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5))
-    end_window = int(0.015 * sr)
-    end_window = min(end_window, len(seg)//4)
-    tail = seg[-end_window:]
+    # Prefer zero-crossing near the end
+    search = int(0.02 * sr)
+    search = min(search, len(seg)//5)
+    tail = seg[-search:]
     zc = np.where(np.diff(np.sign(tail)))[0]
     if len(zc) > 0:
-        cut = len(seg) - end_window + zc[-1]
-        seg = seg[:cut]
+        cut = len(seg) - search + zc[-1]
+        if cut > len(seg) * 0.7:
+            seg = seg[:cut]
     if len(seg) < 100:
         return np.tile(seg, 4)
     cf = int(crossfade_ms / 1000 * sr)
-    cf = min(cf, max(1, len(seg)//8))
+    cf = min(cf, max(1, len(seg)//10))
     fade_out = np.linspace(1, 0, cf)
     fade_in = np.linspace(0, 1, cf)
     looped = []
@@ -183,9 +185,25 @@ def score_chop(y, sr, start, end, song_len):
     score = (energy_score * 0.4) + (transient_score * 0.25) + (position_score * 0.2) + (onset_score * 0.15)
     return max(0.0, score)
 
-def chop_whole_song(y, sr, bars=2):
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
+def estimate_bpm(y, sr):
+    # Primary method
+    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, start_bpm=100)
     bpm = float(tempo) if np.isscalar(tempo) else float(tempo[0])
+    # Fallback if BPM is extreme
+    if bpm < 50 or bpm > 180:
+        tempo2, _ = librosa.beat.beat_track(y=y, sr=sr, start_bpm=120)
+        bpm2 = float(tempo2) if np.isscalar(tempo2) else float(tempo2[0])
+        if 60 <= bpm2 <= 160:
+            bpm = bpm2
+    # Half/double correction for common doubling
+    if bpm > 140:
+        bpm = bpm / 2
+    elif bpm < 70:
+        bpm = bpm * 2
+    return max(60.0, min(180.0, bpm)), beats
+
+def chop_whole_song(y, sr, bars=2):
+    bpm, beats = estimate_bpm(y, sr)
     beat_times = librosa.frames_to_time(beats, sr=sr)
     song_len = len(y) / sr
     bar_len = (bars * 4 * 60) / bpm
@@ -421,7 +439,7 @@ if uploaded:
         if chop_key in st.session_state.hearted:
             hearted_files.append(tmp_path)
 
-        looped = apply_crossfade_loop(seg, sr, crossfade_ms=18)
+        looped = apply_crossfade_loop(seg, sr, crossfade_ms=12)
         loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
         try:
             sf.write(loop_path, looped, sr)
