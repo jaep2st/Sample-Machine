@@ -531,7 +531,6 @@ if uploaded:
         if not hearted_files:
             st.write("No favorites yet. Heart a chop and it will show here.")
         else:
-            # Group by track
             by_track = {}
             for fpath, name, tname in hearted_files:
                 by_track.setdefault(tname, []).append((fpath, name))
@@ -543,11 +542,9 @@ if uploaded:
                         st.caption(name)
                         st.audio(fpath)
                         with open(fpath, "rb") as f:
-                            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"favdl_{name}")
+                            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"favdl_{tname}_{name}")
                     with col2:
-                        # Extract key from name for removal (simplified)
-                        if st.button("✕", key=f"rm_{name}"):
-                            # Remove from session and db
+                        if st.button("✕", key=f"rm_{tname}_{name}"):
                             for key, tn in list(st.session_state.hearted):
                                 if tn == tname and key in name:
                                     user = get_user()
