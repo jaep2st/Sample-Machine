@@ -17,6 +17,43 @@ st.caption("Best · Weird · All · One-shots")
 
 KEYS = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
 
+try:
+    from supabase import create_client
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception:
+    supabase = None
+
+def get_user():
+    if not supabase:
+        return None
+    try:
+        return supabase.auth.get_user()
+    except Exception:
+        return None
+
+def toggle_heart(user_id, item_key):
+    if not supabase or not user_id:
+        return
+    try:
+        existing = supabase.table("hearts").select("id").eq("user_id", user_id).eq("item_key", item_key).execute()
+        if existing.data:
+            supabase.table("hearts").delete().eq("user_id", user_id).eq("item_key", item_key).execute()
+        else:
+            supabase.table("hearts").insert({"user_id": user_id, "item_key": item_key}).execute()
+    except Exception:
+        pass
+
+def get_hearts(user_id):
+    if not supabase or not user_id:
+        return set()
+    try:
+        res = supabase.table("hearts").select("item_key").eq("user_id", user_id).execute()
+        return {row["item_key"] for row in res.data}
+    except Exception:
+        return set()
+
 def process(seg, style):
     if len(seg) < 100:
         return seg
@@ -208,8 +245,44 @@ def make_waveform_image(y_bytes, sr, start, end, width=500, height=28):
     buf.seek(0)
     return buf.getvalue()
 
+# Auth at top
+if supabase:
+    user = get_user()
+    if user is None:
+        with st.expander("Log in or sign up", expanded=False):
+            mode = st.radio(" ", ["Log in", "Sign up"], horizontal=True, label_visibility="collapsed")
+            email = st.text_input("Email", key="auth_email")
+            password = st.text_input("Password", type="password", key="auth_pass")
+            if mode == "Log in":
+                if st.button("Log in", use_container_width=True):
+                    try:
+                        supabase.auth.sign_in_with_password({"email": email, "password": password})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+            else:
+                if st.button("Sign up", use_container_width=True):
+                    try:
+                        supabase.auth.sign_up({"email": email, "password": password})
+                        st.success("Check your email to confirm.")
+                    except Exception as e:
+                        st.error(str(e))
+    else:
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.caption(f"Logged in as {user.user.email}")
+        with col2:
+            if st.button("Log out", use_container_width=True):
+                supabase.auth.sign_out()
+                st.rerun()
+
 if "hearted" not in st.session_state:
     st.session_state.hearted = set()
+
+if supabase:
+    user = get_user()
+    if user:
+        st.session_state.hearted = get_hearts(user.user.id)
 
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
@@ -259,10 +332,15 @@ if uploaded:
         with col2:
             hearted = chop_key in st.session_state.hearted
             if st.button("♥" if hearted else "♡", key=f"heart_{wk}"):
-                if hearted:
-                    st.session_state.hearted.discard(chop_key)
+                user = get_user()
+                if user:
+                    toggle_heart(user.user.id, chop_key)
+                    st.session_state.hearted = get_hearts(user.user.id)
                 else:
-                    st.session_state.hearted.add(chop_key)
+                    if hearted:
+                        st.session_state.hearted.discard(chop_key)
+                    else:
+                        st.session_state.hearted.add(chop_key)
                 st.rerun()
 
         try:
@@ -300,7 +378,6 @@ if uploaded:
         new_key = key
         if pitch != 0 and len(seg) > 100:
             try:
-                # Higher quality pitch shift
                 seg = librosa.effects.pitch_shift(seg, sr=sr, n_steps=pitch, bins_per_octave=36)
                 new_key = shift_key_name(key, pitch)
             except Exception:
@@ -386,10 +463,15 @@ if uploaded:
             with col2:
                 hearted = os_key in st.session_state.hearted
                 if st.button("♥" if hearted else "♡", key=f"heartos_{i}"):
-                    if hearted:
-                        st.session_state.hearted.discard(os_key)
+                    user = get_user()
+                    if user:
+                        toggle_heart(user.user.id, os_key)
+                        st.session_state.hearted = get_hearts(user.user.id)
                     else:
-                        st.session_state.hearted.add(os_key)
+                        if hearted:
+                            st.session_state.hearted.discard(os_key)
+                        else:
+                            st.session_state.hearted.add(os_key)
                     st.rerun()
 
             try:
