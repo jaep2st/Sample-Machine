@@ -33,15 +33,15 @@ def get_user():
     except Exception:
         return None
 
-def toggle_heart(user_id, item_key):
+def toggle_heart(user_id, item_key, track_name=""):
     if not supabase or not user_id:
         return
     try:
-        existing = supabase.table("hearts").select("id").eq("user_id", user_id).eq("item_key", item_key).execute()
+        existing = supabase.table("hearts").select("id").eq("user_id", user_id).eq("item_key", item_key).eq("track_name", track_name).execute()
         if existing.data:
-            supabase.table("hearts").delete().eq("user_id", user_id).eq("item_key", item_key).execute()
+            supabase.table("hearts").delete().eq("user_id", user_id).eq("item_key", item_key).eq("track_name", track_name).execute()
         else:
-            supabase.table("hearts").insert({"user_id": user_id, "item_key": item_key}).execute()
+            supabase.table("hearts").insert({"user_id": user_id, "item_key": item_key, "track_name": track_name}).execute()
     except Exception:
         pass
 
@@ -49,8 +49,8 @@ def get_hearts(user_id):
     if not supabase or not user_id:
         return set()
     try:
-        res = supabase.table("hearts").select("item_key").eq("user_id", user_id).execute()
-        return {row["item_key"] for row in res.data}
+        res = supabase.table("hearts").select("item_key, track_name").eq("user_id", user_id).execute()
+        return {(row["item_key"], row.get("track_name", "")) for row in res.data}
     except Exception:
         return set()
 
@@ -301,6 +301,7 @@ if supabase:
 uploaded = st.file_uploader("Drop a track", type=["mp3", "wav", "m4a", "flac"])
 
 if uploaded:
+    track_name = Path(uploaded.name).stem
     suffix = Path(uploaded.name).suffix.lower()
     if suffix not in [".mp3", ".wav", ".m4a", ".flac"]:
         suffix = ".wav"
@@ -336,26 +337,26 @@ if uploaded:
     included = []
     loops_only = []
     hearted_files = []
-    fav_items = []
 
     def render_chop(start, end, i, label="Chop", tab="all"):
         chop_key = f"chop_{i}"
+        heart_tuple = (chop_key, track_name)
         wk = f"{tab}_{i}"
         col1, col2 = st.columns([8, 1])
         with col1:
             st.markdown(f"**{label} {i}** · {int(bpm)} BPM · {key} · {start:.1f}s")
         with col2:
-            hearted = chop_key in st.session_state.hearted
+            hearted = heart_tuple in st.session_state.hearted
             if st.button("♥" if hearted else "♡", key=f"heart_{wk}"):
                 user = get_user()
                 if user:
-                    toggle_heart(user.user.id, chop_key)
+                    toggle_heart(user.user.id, chop_key, track_name)
                     st.session_state.hearted = get_hearts(user.user.id)
                 else:
                     if hearted:
-                        st.session_state.hearted.discard(chop_key)
+                        st.session_state.hearted.discard(heart_tuple)
                     else:
-                        st.session_state.hearted.add(chop_key)
+                        st.session_state.hearted.add(heart_tuple)
                 st.rerun()
 
         try:
@@ -433,9 +434,8 @@ if uploaded:
         except Exception:
             sf.write(tmp_path, np.zeros(int(sr * 0.5)), sr)
         included.append(tmp_path)
-        if chop_key in st.session_state.hearted:
-            hearted_files.append(tmp_path)
-            fav_items.append((tmp_path, name, loop_path if 'loop_path' in dir() else None))
+        if heart_tuple in st.session_state.hearted:
+            hearted_files.append((tmp_path, name, track_name))
 
         looped = apply_crossfade_loop(seg, sr, crossfade_ms=12)
         loop_path = os.path.join(out_dir, name.replace(".wav", "_loop.wav"))
@@ -444,8 +444,6 @@ if uploaded:
         except Exception:
             sf.write(loop_path, np.tile(seg, 4) if len(seg) > 0 else np.zeros(int(sr * 0.5)), sr)
         loops_only.append(loop_path)
-        if chop_key in st.session_state.hearted:
-            hearted_files.append(loop_path)
 
         st.audio(loop_path)
         st.audio(tmp_path)
@@ -473,21 +471,22 @@ if uploaded:
         os_files = []
         for i, (onset, length, energy) in enumerate(oneshots, 1):
             os_key = f"os_{i}"
+            heart_tuple = (os_key, track_name)
             col1, col2 = st.columns([8, 1])
             with col1:
                 st.markdown(f"**One-shot {i}** · {int(bpm)} BPM · {key} · {onset:.1f}s")
             with col2:
-                hearted = os_key in st.session_state.hearted
+                hearted = heart_tuple in st.session_state.hearted
                 if st.button("♥" if hearted else "♡", key=f"heartos_{i}"):
                     user = get_user()
                     if user:
-                        toggle_heart(user.user.id, os_key)
+                        toggle_heart(user.user.id, os_key, track_name)
                         st.session_state.hearted = get_hearts(user.user.id)
                     else:
                         if hearted:
-                            st.session_state.hearted.discard(os_key)
+                            st.session_state.hearted.discard(heart_tuple)
                         else:
-                            st.session_state.hearted.add(os_key)
+                            st.session_state.hearted.add(heart_tuple)
                     st.rerun()
 
             try:
@@ -505,8 +504,8 @@ if uploaded:
             except Exception:
                 sf.write(os_path, np.zeros(int(sr * 0.5)), sr)
             os_files.append(os_path)
-            if os_key in st.session_state.hearted:
-                hearted_files.append(os_path)
+            if heart_tuple in st.session_state.hearted:
+                hearted_files.append((os_path, os_name, track_name))
 
             loop_os = np.tile(window, 4) if len(window) > 0 else np.zeros(int(sr * 0.5))
             loop_os_path = os.path.join(out_dir, f"osloop_{i}.wav")
@@ -514,8 +513,6 @@ if uploaded:
                 sf.write(loop_os_path, loop_os, sr)
             except Exception:
                 sf.write(loop_os_path, np.zeros(int(sr * 0.5)), sr)
-            if os_key in st.session_state.hearted:
-                hearted_files.append(loop_os_path)
 
             st.audio(loop_os_path)
             st.audio(os_path)
@@ -534,23 +531,36 @@ if uploaded:
         if not hearted_files:
             st.write("No favorites yet. Heart a chop and it will show here.")
         else:
-            st.write(f"{len(set(hearted_files))} favorites from this track")
-            shown = set()
-            for fpath in hearted_files:
-                name = Path(fpath).name
-                if name in shown or "_loop" in name:
-                    continue
-                shown.add(name)
-                st.markdown(f"**{name}**")
-                st.audio(fpath)
-                with open(fpath, "rb") as f:
-                    st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"favdl_{name}")
+            # Group by track
+            by_track = {}
+            for fpath, name, tname in hearted_files:
+                by_track.setdefault(tname, []).append((fpath, name))
+            for tname, items in by_track.items():
+                st.markdown(f"**{tname}**")
+                for fpath, name in items:
+                    col1, col2 = st.columns([6, 1])
+                    with col1:
+                        st.caption(name)
+                        st.audio(fpath)
+                        with open(fpath, "rb") as f:
+                            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"favdl_{name}")
+                    with col2:
+                        # Extract key from name for removal (simplified)
+                        if st.button("✕", key=f"rm_{name}"):
+                            # Remove from session and db
+                            for key, tn in list(st.session_state.hearted):
+                                if tn == tname and key in name:
+                                    user = get_user()
+                                    if user:
+                                        toggle_heart(user.user.id, key, tname)
+                                    st.session_state.hearted.discard((key, tn))
+                            st.rerun()
 
     if hearted_files:
         zpath = os.path.join(out_dir, "favorites.zip")
         with zipfile.ZipFile(zpath, "w") as zf:
-            for fpath in hearted_files:
-                zf.write(fpath, Path(fpath).name)
+            for fpath, name, tname in hearted_files:
+                zf.write(fpath, name)
         with open(zpath, "rb") as f:
             st.download_button("Download Favorites", f, file_name="favorites.zip", key="favpack")
 
