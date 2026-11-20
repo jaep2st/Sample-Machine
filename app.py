@@ -534,6 +534,7 @@ if uploaded:
             by_track = {}
             for fpath, name, tname in hearted_files:
                 by_track.setdefault(tname, []).append((fpath, name))
+            idx = 0
             for tname, items in by_track.items():
                 st.markdown(f"**{tname}**")
                 for fpath, name in items:
@@ -542,9 +543,9 @@ if uploaded:
                         st.caption(name)
                         st.audio(fpath)
                         with open(fpath, "rb") as f:
-                            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"favdl_{tname}_{name}")
+                            st.download_button("Download", f, file_name=name, mime="audio/wav", key=f"favdl_{idx}")
                     with col2:
-                        if st.button("✕", key=f"rm_{tname}_{name}"):
+                        if st.button("✕", key=f"rm_{idx}"):
                             for key, tn in list(st.session_state.hearted):
                                 if tn == tname and key in name:
                                     user = get_user()
@@ -552,6 +553,7 @@ if uploaded:
                                         toggle_heart(user.user.id, key, tname)
                                     st.session_state.hearted.discard((key, tn))
                             st.rerun()
+                    idx += 1
 
     if hearted_files:
         zpath = os.path.join(out_dir, "favorites.zip")
